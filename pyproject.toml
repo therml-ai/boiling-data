@@ -1,0 +1,47 @@
+[project]
+name = "boiling-data"
+version = "0.1.0"
+description = "A utility library for converting between boiling data formats"
+readme = "README.md"
+authors = [
+    { name = "Arthur Feeney", email = "afeeney@uci.edu" }
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.8.6,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "mypy>=1.14",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
