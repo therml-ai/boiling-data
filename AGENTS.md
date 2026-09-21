@@ -4,7 +4,7 @@
 
 `boiling-data` is a utility library for converting between boiling data formats.
 
-The core idea: read data in a specific format into a Python object, then write that
+The core idea: read data of a specific format into a Python object, then write that
 object out in another format. 
 The conversions between different formats can always go through this single common
 Python object that essentially defines various to_\*/from_\* methods to convert to/from
@@ -29,6 +29,9 @@ done. Run `uv run ruff format .` to handle formatting.
 **Run the tests.** Every change runs `uv run pytest`. New behavior comes with a
 test; a change that alters behavior updates the tests that covered it. Do not
 report work as finished without having actually run the suite.
+
+**Unit tests should be lightweight.** Unit tests should be kept fairly simple so that
+the entire test suite can be run quickly.
 
 **Keep it clean.** Write comments only for what the code cannot say itself — a
 non-obvious constraint, a format quirk, a reason for an odd workaround. Do not
