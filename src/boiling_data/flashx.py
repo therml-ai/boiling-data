@@ -276,12 +276,16 @@ def read_discretization(frame: h5py.File, layout: BlockLayout) -> dict[str, Any]
 
 
 def read_non_dimensional(frame: h5py.File) -> dict[str, float]:
+    """A gravity component the run did not set is zero."""
     reals = _runtime_parameters(frame, "real")
-    return {
+    parameters = {
         name: float(reals[flashx_name])
         for flashx_name, name in NON_DIMENSIONAL_PARAMETERS.items()
         if flashx_name in reals
     }
+    for component in ("gravx", "gravy", "gravz"):
+        parameters.setdefault(component, 0.0)
+    return parameters
 
 
 def read_physical(directory: Path) -> dict[str, Any]:

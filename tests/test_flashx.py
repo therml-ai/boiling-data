@@ -153,6 +153,19 @@ def test_discretization_parameters(half_domain: BoilingSimulation) -> None:
     }
 
 
+def test_missing_gravity_components_default_to_zero(
+    flashx_directory: Path, tmp_path: Path
+) -> None:
+    (plotfile,) = _copy_frames(flashx_directory, tmp_path, count=1)
+    with h5py.File(plotfile, "r+") as frame:
+        table = frame["real runtime parameters"][()]
+        names = np.char.strip(table["name"].astype(str))
+        del frame["real runtime parameters"]
+        frame["real runtime parameters"] = table[names != "ins_gravz"]
+    gravity = read_flashx(tmp_path).parameters.non_dimensional
+    assert (gravity["gravx"], gravity["gravy"], gravity["gravz"]) == (0.0, -1.0, 0.0)
+
+
 def test_run_without_heater_files_has_no_heaters(
     half_domain: BoilingSimulation,
 ) -> None:
