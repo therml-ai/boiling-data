@@ -28,3 +28,10 @@ coverage.xml
 .idea/
 .vscode/
 .DS_Store
+
+# Simulation output; only the deliberate samples under tests/data are tracked
+*.hdf5
+*.h5
+*_hdf5_plt_cnt_*
+*_hdf5_chk_*
+!tests/data/**
