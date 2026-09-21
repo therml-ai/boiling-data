@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
@@ -119,3 +120,14 @@ class BoilingSimulation:
         from boiling_data.flashx import read_flashx
 
         return read_flashx(directory, mirror_symmetric=mirror_symmetric)
+
+    @classmethod
+    def from_bubbleml(cls, path: str | os.PathLike[str]) -> "BoilingSimulation":
+        from boiling_data.bubbleml import read_bubbleml
+
+        return read_bubbleml(path)
+
+    def to_bubbleml(self, path: str | os.PathLike[str]) -> Path:
+        from boiling_data.bubbleml import write_bubbleml
+
+        return write_bubbleml(self, path)
