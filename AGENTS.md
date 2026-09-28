@@ -44,7 +44,8 @@ Type hints are expected; `mypy` runs in strict mode (`uv run mypy`).
 ## Commands
 
 ```bash
-uv sync              # install deps
+uv sync              # install deps (torch from PyPI: CUDA 13 on Linux, CPU/MPS on macOS)
+uv sync --extra cu128  # or --extra cu130 / --extra cpu to pick the torch build
 uv run pytest        # tests
 uv run ruff check .  # lint
 uv run ruff format . # format
