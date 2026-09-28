@@ -12,6 +12,20 @@ dependencies = [
     "numpy>=2.2.6",
 ]
 
+[project.optional-dependencies]
+torch = [
+    "torch>=2.11.0,<3",
+]
+cpu = [
+    "torch>=2.11.0,<3",
+]
+cu128 = [
+    "torch>=2.11.0,<3",
+]
+cu130 = [
+    "torch>=2.11.0,<3",
+]
+
 [build-system]
 requires = ["uv_build>=0.8.6,<0.9.0"]
 build-backend = "uv_build"
@@ -22,7 +36,39 @@ dev = [
     "pytest-cov>=6.0",
     "mypy>=1.14",
     "ruff>=0.9",
+    "torch>=2.11.0,<3",
 ]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu128" },
+        { extra = "cu130" },
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
