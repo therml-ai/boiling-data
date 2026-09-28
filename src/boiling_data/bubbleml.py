@@ -1,5 +1,6 @@
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -99,31 +100,56 @@ def _read_parameters(handle: h5py.File, path: Path) -> SimulationParameters:
         return SimulationParameters.from_dict(json.load(sidecar_handle))
 
 
-def read_bubbleml(path: str | os.PathLike[str]) -> BoilingSimulation:
+def read_bubbleml(
+    path: str | os.PathLike[str],
+    field_names: Iterable[str] | None = None,
+    frames: slice = slice(None),
+) -> BoilingSimulation:
+    """field_names and frames select what is read from disk, so a window of a
+    large case can be loaded without reading all of it."""
     path = Path(path)
     fields = {}
     with h5py.File(path, "r") as handle:
         parameters = _read_parameters(handle, path)
         grid = _grid(parameters.discretization)
-        for name, dataset in handle.items():
-            if name == "time" or name in grid:
-                continue
-            data = dataset[()].astype(np.float64)
+        stored = _stored_field_names(handle, grid)
+        selected = stored if field_names is None else list(field_names)
+        missing = sorted(set(selected) - set(stored))
+        if missing:
+            raise KeyError(f"{path} has no fields {missing}; it has {sorted(stored)}")
+        for name in selected:
+            data = handle[name][frames].astype(np.float64)
             fields[name] = Field(
                 data,
                 grid_x=_axis_coordinates(name, data.shape[-1], grid, "x"),
                 grid_y=_axis_coordinates(name, data.shape[-2], grid, "y"),
             )
-        time = (
-            handle["time"][()].astype(np.float64)
-            if "time" in handle
-            else _uniform_time(parameters.discretization, next(iter(fields.values())))
-        )
+        time = _read_time(handle, parameters.discretization, stored[0])[frames]
     return BoilingSimulation(fields=fields, parameters=parameters, time=time)
 
 
-def _uniform_time(discretization: dict[str, Any], field: Field) -> FloatArray:
+def read_bubbleml_num_timesteps(path: str | os.PathLike[str]) -> int:
+    path = Path(path)
+    with h5py.File(path, "r") as handle:
+        grid = _grid(_read_parameters(handle, path).discretization)
+        return int(handle[_stored_field_names(handle, grid)[0]].shape[0])
+
+
+def _stored_field_names(handle: h5py.File, grid: dict[str, FloatArray]) -> list[str]:
+    return [name for name in handle if name != "time" and name not in grid]
+
+
+def _read_time(
+    handle: h5py.File, discretization: dict[str, Any], any_field: str
+) -> FloatArray:
+    if "time" in handle:
+        time: FloatArray = handle["time"][()].astype(np.float64)
+        return time
+    return _uniform_time(discretization, int(handle[any_field].shape[0]))
+
+
+def _uniform_time(discretization: dict[str, Any], num_timesteps: int) -> FloatArray:
     """Files written before ``time`` was stored hold frames at every plot
     interval from the start of the run."""
     t_initial, dt = float(discretization["t_initial"]), float(discretization["dt"])
-    return t_initial + dt * np.arange(field.num_timesteps, dtype=np.float64)
+    return t_initial + dt * np.arange(num_timesteps, dtype=np.float64)

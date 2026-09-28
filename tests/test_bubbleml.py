@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, Field
-from boiling_data.bubbleml import PARAMETERS_ATTRIBUTE, read_bubbleml, write_bubbleml
+from boiling_data.bubbleml import (
+    PARAMETERS_ATTRIBUTE,
+    read_bubbleml,
+    read_bubbleml_num_timesteps,
+    write_bubbleml,
+)
 
 NUM_FRAMES, HEIGHT, WIDTH = 3, 288, 96
 GRID_DATASETS = {"time", "x_centers", "y_centers", "x_faces", "y_faces"}
@@ -134,3 +139,23 @@ def test_flashx_sample_converts_to_the_same_layout(
         for name in sample:
             assert copy[name].shape == sample[name].shape
             assert copy[name].dtype == sample[name].dtype
+
+
+def test_selected_fields_and_frames_are_read(
+    bubbleml_path: Path, bubbleml_case: BoilingSimulation
+) -> None:
+    window = read_bubbleml(bubbleml_path, field_names=["velx"], frames=slice(1, 3))
+    assert set(window.fields) == {"velx"}
+    np.testing.assert_array_equal(
+        window.field("velx").data, bubbleml_case.field("velx").data[1:3]
+    )
+    np.testing.assert_array_equal(window.time, bubbleml_case.time[1:3])
+
+
+def test_selecting_a_missing_field_raises(bubbleml_path: Path) -> None:
+    with pytest.raises(KeyError, match="velz"):
+        read_bubbleml(bubbleml_path, field_names=["velz"])
+
+
+def test_num_timesteps(bubbleml_path: Path) -> None:
+    assert read_bubbleml_num_timesteps(bubbleml_path) == NUM_FRAMES
