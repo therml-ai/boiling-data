@@ -10,6 +10,7 @@ CPU = torch.device("cpu")
 # the last axis of a field is x and the one before it y
 FACE_FIELD_AXES = {FIELD_NAMES["fv_x"]: -1, FIELD_NAMES["fv_y"]: -2}
 NON_DIMENSIONAL_GROUP = "non_dimensional"
+HEATERS_GROUP = "heaters"
 
 
 @dataclass
@@ -64,17 +65,29 @@ class FlashXBatch:
         return FlashXBatch(fields, list(self.configs), self.device)
 
     def config_tensor(
-        self, names: Sequence[str], dtype: torch.dtype = torch.float32
+        self,
+        non_dimensional: Sequence[str],
+        heater: Sequence[str] = (),
+        dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
-        """[batch_size, len(names)] tensor of the named non-dimensional parameters
-        of every config, in the order given."""
-        require_non_empty_sequence("names", names)
+        """[batch_size, len(non_dimensional) + len(heater)] tensor of every config's
+        named non-dimensional parameters followed by its named heater parameters,
+        each in the order given. Heater parameters need a config with one heater."""
+        require_non_empty_sequence("non_dimensional", non_dimensional)
+        if isinstance(heater, str):
+            raise ValueError(f"heater must be a sequence of names, not {heater!r}")
         values = [
-            [_non_dimensional_parameter(config, name) for name in names]
+            [
+                _parameter(
+                    config.get(NON_DIMENSIONAL_GROUP, {}), name, "non-dimensional"
+                )
+                for name in non_dimensional
+            ]
+            + [_parameter(_only_heater(config), name, "heater") for name in heater]
             for config in self.configs
         ]
         return torch.tensor(values, dtype=dtype, device=self.device).reshape(
-            self.batch_size, len(names)
+            self.batch_size, len(non_dimensional) + len(heater)
         )
 
     def stacked_fields(self, names: Sequence[str]) -> torch.Tensor:
@@ -112,13 +125,49 @@ class FlashXBatch:
             )
 
 
+@dataclass
+class FlashXForecastBatch:
+    """A batch of input windows and the target windows that follow them."""
+
+    input: FlashXBatch
+    target: FlashXBatch
+
+    @property
+    def batch_size(self) -> int:
+        return self.input.batch_size
+
+    def to(
+        self, device: torch.device, non_blocking: bool = False
+    ) -> "FlashXForecastBatch":
+        return FlashXForecastBatch(
+            self.input.to(device, non_blocking),
+            self.target.to(device, non_blocking),
+        )
+
+    def pin_memory(self) -> "FlashXForecastBatch":
+        return FlashXForecastBatch(self.input.pin_memory(), self.target.pin_memory())
+
+
+type FlashXForecastSample = tuple[FlashXSample, FlashXSample]
+
+
 def flashx_collater(
-    samples: Sequence[FlashXSample], device: torch.device = CPU
-) -> FlashXBatch:
-    """Stack the samples' fields along a new leading batch dimension. Usable as a
-    DataLoader ``collate_fn``; bind ``device`` with ``functools.partial``."""
+    samples: Sequence[FlashXForecastSample], device: torch.device = CPU
+) -> FlashXForecastBatch:
+    """Collate (input, target) sample pairs into one batch of inputs and one of
+    targets. Usable as a DataLoader ``collate_fn``; bind ``device`` with
+    ``functools.partial``."""
     if not samples:
         raise ValueError("cannot collate an empty list of samples")
+    return FlashXForecastBatch(
+        _collate_samples([input_sample for input_sample, _ in samples], device),
+        _collate_samples([target_sample for _, target_sample in samples], device),
+    )
+
+
+def _collate_samples(
+    samples: Sequence[FlashXSample], device: torch.device
+) -> FlashXBatch:
     names = samples[0].fields.keys()
     for index, sample in enumerate(samples):
         if sample.fields.keys() != names:
@@ -145,11 +194,19 @@ def require_non_empty_sequence(argument: str, values: Sequence[str]) -> None:
         raise ValueError(f"{argument} must be a non-empty sequence, not {values!r}")
 
 
-def _non_dimensional_parameter(config: dict[str, Any], name: str) -> float:
-    parameters = config.get(NON_DIMENSIONAL_GROUP, {})
+def _only_heater(config: dict[str, Any]) -> dict[str, Any]:
+    heaters = config.get(HEATERS_GROUP, [])
+    if len(heaters) != 1:
+        raise ValueError(
+            f"heater parameters need a config with one heater, not {len(heaters)}"
+        )
+    heater: dict[str, Any] = heaters[0]
+    return heater
+
+
+def _parameter(parameters: dict[str, Any], name: str, kind: str) -> float:
     if name not in parameters:
         raise KeyError(
-            f"config has no non-dimensional parameter {name!r}; it has "
-            f"{sorted(parameters)}"
+            f"config has no {kind} parameter {name!r}; it has {sorted(parameters)}"
         )
     return float(parameters[name])

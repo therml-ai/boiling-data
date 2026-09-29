@@ -43,12 +43,30 @@ def test_config_tensor_only_reads_non_dimensional_parameters(name: str) -> None:
         _batch([_config(1.0, 0.5)]).config_tensor([name])
 
 
+def test_heater_parameters_follow_the_non_dimensional_ones() -> None:
+    batch = _batch([_config(1.0, 0.5), _config(2.0, 0.25)])
+    tensor = batch.config_tensor(["stefan"], heater=["wallTemp"])
+    torch.testing.assert_close(tensor, torch.tensor([[0.5, 1.0], [0.25, 2.0]]))
+
+
+def test_heater_parameters_need_exactly_one_heater() -> None:
+    config = _config(1.0, 0.5)
+    config["heaters"].append(dict(config["heaters"][0]))
+    with pytest.raises(ValueError, match="one heater, not 2"):
+        _batch([config]).config_tensor(["stefan"], heater=["wallTemp"])
+
+
+def test_missing_heater_parameter_raises() -> None:
+    with pytest.raises(KeyError, match="no heater parameter 'advAngle'"):
+        _batch([_config(1.0, 0.5)]).config_tensor(["stefan"], heater=["advAngle"])
+
+
 def test_config_tensor_from_simulation_parameters(
     bubbleml_case: BoilingSimulation,
 ) -> None:
     batch = _batch([bubbleml_case.parameters.to_dict()])
-    tensor = batch.config_tensor(["stefan", "prandtl"])
-    torch.testing.assert_close(tensor, torch.tensor([[0.156, 7.35]]))
+    tensor = batch.config_tensor(["stefan", "prandtl"], heater=["wallTemp", "xMax"])
+    torch.testing.assert_close(tensor, torch.tensor([[0.156, 7.35, 1.0, 2.0]]))
 
 
 def test_fields_and_config_tensor_are_on_the_batch_device() -> None:
@@ -167,36 +185,50 @@ def test_pin_memory_pins_every_field() -> None:
     assert pinned.device == batch.device
 
 
-def _sample(wall_temp: float) -> FlashXSample:
+def _sample(wall_temp: float, num_timesteps: int = 2) -> FlashXSample:
     return FlashXSample(
         {
-            "temperature": torch.full((2, 4, 3), wall_temp),
-            "velfacex": torch.zeros(2, 4, 4),
+            "temperature": torch.full((num_timesteps, 4, 3), wall_temp),
+            "velfacex": torch.zeros(num_timesteps, 4, 4),
         },
         _config(wall_temp, 0.5),
     )
 
 
-def test_collater_stacks_fields_along_a_new_batch_dimension() -> None:
-    batch = flashx_collater([_sample(1.0), _sample(2.0)])
-    assert batch.batch_size == 2
-    assert batch.fields["temperature"].shape == (2, 2, 4, 3)
-    assert batch.fields["velfacex"].shape == (2, 2, 4, 4)
+def _pair(wall_temp: float) -> tuple[FlashXSample, FlashXSample]:
+    return _sample(wall_temp), _sample(wall_temp + 10.0, num_timesteps=1)
+
+
+def test_collater_stacks_inputs_and_targets_along_a_new_batch_dimension() -> None:
+    batch = flashx_collater([_pair(1.0), _pair(2.0)])
+    assert batch.batch_size == batch.input.batch_size == batch.target.batch_size == 2
+    assert batch.input.fields["temperature"].shape == (2, 2, 4, 3)
+    assert batch.target.fields["velfacex"].shape == (2, 1, 4, 4)
     torch.testing.assert_close(
-        batch.fields["temperature"][1], torch.full((2, 4, 3), 2.0)
+        batch.input.fields["temperature"][1], torch.full((2, 4, 3), 2.0)
     )
-    assert [config["heaters"][0]["wallTemp"] for config in batch.configs] == [1.0, 2.0]
+    torch.testing.assert_close(
+        batch.target.fields["temperature"][1], torch.full((1, 4, 3), 12.0)
+    )
+    wall_temps = [config["heaters"][0]["wallTemp"] for config in batch.input.configs]
+    assert wall_temps == [1.0, 2.0]
 
 
 def test_collater_moves_the_batch_to_the_device() -> None:
-    batch = flashx_collater([_sample(1.0)], device=torch.device("meta"))
-    assert batch.fields["temperature"].device == torch.device("meta")
+    batch = flashx_collater([_pair(1.0)], device=torch.device("meta"))
+    assert batch.input.fields["temperature"].is_meta
+    assert batch.target.fields["temperature"].is_meta
+
+
+def test_forecast_batch_to_moves_inputs_and_targets() -> None:
+    moved = flashx_collater([_pair(1.0)]).to(torch.device("meta"))
+    assert moved.input.device == moved.target.device == torch.device("meta")
 
 
 def test_collater_rejects_samples_with_different_fields() -> None:
     mismatched = FlashXSample({"temperature": torch.zeros(2, 4, 3)}, _config(2.0, 0.5))
     with pytest.raises(ValueError, match="fields"):
-        flashx_collater([_sample(1.0), mismatched])
+        flashx_collater([_pair(1.0), (mismatched, _sample(2.0))])
 
 
 def test_collater_rejects_an_empty_list() -> None:

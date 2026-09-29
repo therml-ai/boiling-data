@@ -12,33 +12,61 @@ from boiling_data.flashx_dataset import FlashXDataset
 FIELD_NAMES = ["temperature", "velfacex"]
 
 
-def _dataset(paths: list[Path], timesteps_per_sample: int = 2) -> FlashXDataset:
-    return FlashXDataset(paths, FIELD_NAMES, timesteps_per_sample)
+def _dataset(
+    paths: list[Path], input_timesteps: int = 1, target_timesteps: int = 1
+) -> FlashXDataset:
+    return FlashXDataset(paths, FIELD_NAMES, input_timesteps, target_timesteps)
+
+
+def _from_file(case: BoilingSimulation, name: str, frames: slice) -> torch.Tensor:
+    return torch.from_numpy(case.field(name).data[frames]).float()
 
 
 def test_every_sliding_window_of_every_file_is_a_sample(bubbleml_path: Path) -> None:
     assert len(_dataset([bubbleml_path])) == 2
     assert len(_dataset([bubbleml_path, bubbleml_path])) == 4
-    assert len(_dataset([bubbleml_path], timesteps_per_sample=3)) == 1
-    assert len(_dataset([bubbleml_path], timesteps_per_sample=4)) == 0
+    assert len(_dataset([bubbleml_path], input_timesteps=2)) == 1
+    assert len(_dataset([bubbleml_path], input_timesteps=2, target_timesteps=2)) == 0
 
 
-def test_sample_holds_the_window_of_the_named_fields(
+def test_target_holds_the_frames_after_the_input(
     bubbleml_path: Path, bubbleml_case: BoilingSimulation
 ) -> None:
-    sample = _dataset([bubbleml_path])[1]
-    assert set(sample.fields) == set(FIELD_NAMES)
-    assert sample.fields["temperature"].dtype == torch.float32
-    assert sample.fields["velfacex"].shape == (2, 288, 97)
-    expected = torch.from_numpy(bubbleml_case.field("temperature").data[1:3])
-    torch.testing.assert_close(sample.fields["temperature"], expected.float())
-    assert sample.config == bubbleml_case.parameters.to_dict()
+    input_sample, target_sample = _dataset(
+        [bubbleml_path], input_timesteps=2, target_timesteps=1
+    )[0]
+    assert set(input_sample.fields) == set(target_sample.fields) == set(FIELD_NAMES)
+    assert input_sample.fields["temperature"].dtype == torch.float32
+    assert input_sample.fields["velfacex"].shape == (2, 288, 97)
+    assert target_sample.fields["velfacex"].shape == (1, 288, 97)
+    torch.testing.assert_close(
+        input_sample.fields["temperature"],
+        _from_file(bubbleml_case, "temperature", slice(0, 2)),
+    )
+    torch.testing.assert_close(
+        target_sample.fields["temperature"],
+        _from_file(bubbleml_case, "temperature", slice(2, 3)),
+    )
+    assert input_sample.config == target_sample.config
+    assert input_sample.config == bubbleml_case.parameters.to_dict()
+
+
+def test_windows_start_at_the_start_frame(
+    bubbleml_path: Path, bubbleml_case: BoilingSimulation
+) -> None:
+    dataset = FlashXDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=1)
+    assert len(dataset) == 1
+    input_sample, _ = dataset[0]
+    torch.testing.assert_close(
+        input_sample.fields["temperature"],
+        _from_file(bubbleml_case, "temperature", slice(1, 2)),
+    )
 
 
 def test_indices_past_the_first_file_read_the_next_file(bubbleml_path: Path) -> None:
     dataset = _dataset([bubbleml_path, bubbleml_path])
     torch.testing.assert_close(
-        dataset[3].fields["temperature"], dataset[1].fields["temperature"]
+        dataset[3][1].fields["temperature"], dataset[1][1].fields["temperature"]
     )
 
 
@@ -48,27 +76,41 @@ def test_out_of_range_index_raises(bubbleml_path: Path) -> None:
 
 
 def test_missing_field_raises(bubbleml_path: Path) -> None:
-    dataset = FlashXDataset([bubbleml_path], ["temperature", "velz"], 1)
+    dataset = FlashXDataset([bubbleml_path], ["temperature", "velz"], 1, 1)
     with pytest.raises(KeyError, match="velz"):
         dataset[0]
 
 
 @pytest.mark.parametrize(
-    ("field_names", "timesteps_per_sample"),
-    [([], 1), ("temperature", 1), (FIELD_NAMES, 0)],
+    ("field_names", "input_timesteps", "target_timesteps", "message"),
+    [
+        ([], 1, 1, "non-empty sequence"),
+        ("temperature", 1, 1, "non-empty sequence"),
+        (FIELD_NAMES, 0, 1, "input_timesteps"),
+        (FIELD_NAMES, 1, 0, "target_timesteps"),
+    ],
 )
 def test_invalid_arguments_raise(
-    bubbleml_path: Path, field_names: list[str], timesteps_per_sample: int
+    bubbleml_path: Path,
+    field_names: list[str],
+    input_timesteps: int,
+    target_timesteps: int,
+    message: str,
 ) -> None:
-    with pytest.raises(ValueError):
-        FlashXDataset([bubbleml_path], field_names, timesteps_per_sample)
+    with pytest.raises(ValueError, match=message):
+        FlashXDataset([bubbleml_path], field_names, input_timesteps, target_timesteps)
 
 
-def test_data_loader_batches_every_frame_of_the_case_in_order(
+def test_negative_start_frame_raises(bubbleml_path: Path) -> None:
+    with pytest.raises(ValueError, match="start_frame"):
+        FlashXDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=-1)
+
+
+def test_data_loader_batches_inputs_and_targets_of_the_case(
     bubbleml_path: Path, bubbleml_case: BoilingSimulation
 ) -> None:
     field_names = ["temperature", "dfun", "velfacex", "velfacey"]
-    dataset = FlashXDataset([bubbleml_path], field_names, timesteps_per_sample=1)
+    dataset = FlashXDataset([bubbleml_path], field_names, 1, 1)
     loader = DataLoader(
         dataset,
         batch_size=2,
@@ -76,30 +118,28 @@ def test_data_loader_batches_every_frame_of_the_case_in_order(
         collate_fn=partial(flashx_collater, device=torch.device("cpu")),
     )
 
-    batches = list(loader)
+    (batch,) = list(loader)
 
-    assert [batch.batch_size for batch in batches] == [2, 1]
-    stacked = torch.cat([batch.stack_field_cells(field_names) for batch in batches])
-    assert stacked.shape == (3, 6, 1, 288, 96)
-
-    def from_file(name: str) -> torch.Tensor:
-        return torch.from_numpy(bubbleml_case.field(name).data).float()
-
-    velfacex, velfacey = from_file("velfacex"), from_file("velfacey")
-    expected_channels = [
-        from_file("temperature"),
-        from_file("dfun"),
-        velfacex[..., :-1],
-        velfacex[..., 1:],
-        velfacey[..., :-1, :],
-        velfacey[..., 1:, :],
-    ]
-    for channel, expected in enumerate(expected_channels):
-        torch.testing.assert_close(stacked[:, channel, 0], expected)
-    configs = torch.cat(
-        [batch.config_tensor(["stefan", "prandtl"]) for batch in batches]
+    assert batch.batch_size == 2
+    for windows, frames in ((batch.input, slice(0, 2)), (batch.target, slice(1, 3))):
+        stacked = windows.stack_field_cells(field_names)
+        assert stacked.shape == (2, 6, 1, 288, 96)
+        velfacex = _from_file(bubbleml_case, "velfacex", frames)
+        velfacey = _from_file(bubbleml_case, "velfacey", frames)
+        expected_channels = [
+            _from_file(bubbleml_case, "temperature", frames),
+            _from_file(bubbleml_case, "dfun", frames),
+            velfacex[..., :-1],
+            velfacex[..., 1:],
+            velfacey[..., :-1, :],
+            velfacey[..., 1:, :],
+        ]
+        for channel, expected in enumerate(expected_channels):
+            torch.testing.assert_close(stacked[:, channel, 0], expected)
+    torch.testing.assert_close(
+        batch.input.config_tensor(["stefan", "prandtl"]),
+        torch.tensor([[0.156, 7.35]] * 2),
     )
-    torch.testing.assert_close(configs, torch.tensor([[0.156, 7.35]] * 3))
 
 
 @pytest.mark.skipif(
@@ -113,6 +153,8 @@ def test_data_loader_pins_batches_for_a_non_blocking_copy(bubbleml_path: Path) -
         pin_memory=True,
     )
     (batch,) = list(loader)
-    assert all(tensor.is_pinned() for tensor in batch.fields.values())
+    for windows in (batch.input, batch.target):
+        assert all(tensor.is_pinned() for tensor in windows.fields.values())
     on_gpu = batch.to(torch.device("cuda"), non_blocking=True)
-    assert on_gpu.fields["temperature"].is_cuda
+    assert on_gpu.input.fields["temperature"].is_cuda
+    assert on_gpu.target.fields["temperature"].is_cuda
