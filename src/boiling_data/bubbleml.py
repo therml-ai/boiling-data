@@ -135,6 +135,12 @@ def read_bubbleml_num_timesteps(path: str | os.PathLike[str]) -> int:
         return int(handle[_stored_field_names(handle, grid)[0]].shape[0])
 
 
+def read_bubbleml_parameters(path: str | os.PathLike[str]) -> SimulationParameters:
+    path = Path(path)
+    with h5py.File(path, "r") as handle:
+        return _read_parameters(handle, path)
+
+
 def _stored_field_names(handle: h5py.File, grid: dict[str, FloatArray]) -> list[str]:
     return [name for name in handle if name != "time" and name not in grid]
 
