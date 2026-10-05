@@ -1,10 +1,13 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 import numpy.typing as npt
+
+if TYPE_CHECKING:
+    from boiling_data.flashx.checks import Issue
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -117,7 +120,7 @@ class BoilingSimulation:
     ) -> "BoilingSimulation":
         """mirror_symmetric: the run was symmetric about x = 0 and only computed
         the right half; reflect it into the full domain."""
-        from boiling_data.flashx import read_flashx
+        from boiling_data.flashx.reader import read_flashx
 
         return read_flashx(directory, mirror_symmetric=mirror_symmetric)
 
@@ -131,3 +134,10 @@ class BoilingSimulation:
         from boiling_data.bubbleml import write_bubbleml
 
         return write_bubbleml(self, path)
+
+    def check(self) -> list["Issue"]:
+        """Problems found in the fields and parameters; see
+        boiling_data.flashx.checks."""
+        from boiling_data.flashx.checks import check_simulation
+
+        return check_simulation(self)

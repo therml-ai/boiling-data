@@ -16,6 +16,8 @@ The implementations for different filetypes should basically be independent.
 ## Layout
 
 - `src/boiling_data/` — package source (src-layout, `py.typed`)
+- `src/boiling_data/flashx/` — anything specific to Flash-X simulations or their
+  parameters: the reader, symmetry, heat flux, checks, and the dataset / batching
 - `tests/` — pytest suite
 
 Dependencies are managed with `uv`. Use `uv add <pkg>` rather than editing
