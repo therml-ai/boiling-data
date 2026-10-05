@@ -4,7 +4,7 @@ import pytest
 
 from boiling_data.boiling_data import BoilingSimulation
 from boiling_data.bubbleml import read_bubbleml
-from boiling_data.flashx import read_flashx
+from boiling_data.flashx.reader import read_flashx
 
 DATA = Path(__file__).parent / "data"
 FLASHX_DATA = DATA / "flashx"
