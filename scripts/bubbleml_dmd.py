@@ -18,7 +18,11 @@ from matplotlib.figure import Figure
 from boiling_data.boiling_data import Field
 from boiling_data.bubbleml import read_bubbleml
 from boiling_data.dmd import DMD, compute_dmd, uniform_timestep, vorticity
-from boiling_data.heat_flux import HEAT_FLUX_FIELDS, HeaterHeatFlux, heater_heat_flux
+from boiling_data.flashx.heat_flux import (
+    HEAT_FLUX_FIELDS,
+    HeaterHeatFlux,
+    heater_heat_flux,
+)
 
 VORTICITY = "vorticity"
 HEAT_FLUX = "heatflux"
