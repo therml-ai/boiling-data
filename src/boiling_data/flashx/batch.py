@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from boiling_data.flashx import FIELD_NAMES
+from boiling_data.flashx.reader import FIELD_NAMES
 
 CPU = torch.device("cpu")
 # the last axis of a field is x and the one before it y

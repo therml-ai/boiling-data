@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, Field, SimulationParameters
-from boiling_data.symmetry import mirror_field_x, mirror_x
+from boiling_data.flashx.symmetry import mirror_field_x, mirror_x
 
 WIDTH = 96
 

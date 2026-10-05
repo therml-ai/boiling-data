@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from boiling_data.bubbleml import read_bubbleml, read_bubbleml_num_timesteps
-from boiling_data.flashx_batch import (
+from boiling_data.flashx.batch import (
     FlashXForecastSample,
     FlashXSample,
     require_non_empty_sequence,

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from boiling_data.boiling_data import BoilingSimulation
-from boiling_data.flashx_batch import FlashXBatch, FlashXSample, flashx_collater
+from boiling_data.flashx.batch import FlashXBatch, FlashXSample, flashx_collater
 
 
 def _config(wall_temp: float, stefan: float) -> dict[str, Any]:

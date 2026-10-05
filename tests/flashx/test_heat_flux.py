@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, Field, SimulationParameters
-from boiling_data.heat_flux import dimensional_temperature, heater_heat_flux
+from boiling_data.flashx.heat_flux import dimensional_temperature, heater_heat_flux
 
 PHYSICAL = {
     "wall_temp": 70.0,

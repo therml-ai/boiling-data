@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, SimulationParameters
-from boiling_data.flashx import read_flashx
+from boiling_data.flashx.reader import read_flashx
 
 NUM_FRAMES, HEIGHT, WIDTH = 3, 288, 96
 NX_BLOCK, NY_BLOCK = 16, 16

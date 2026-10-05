@@ -15,7 +15,7 @@ from boiling_data.boiling_data import (
     FloatArray,
     SimulationParameters,
 )
-from boiling_data.symmetry import mirror_x
+from boiling_data.flashx.symmetry import mirror_x
 
 PLOTFILE_PATTERN = re.compile(r"_hdf5_plt_cnt_\d+$")
 HEATER_PATTERN = re.compile(r"_hdf5_htr_\d+$")
