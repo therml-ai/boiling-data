@@ -2,7 +2,11 @@
 
 ## Project
 
-`boiling-data` is a utility library for converting between boiling data formats.
+`boiling-data` is a utility library for 
+1. converting between boiling data formats.
+2. loading data into batches for training
+3. loading / storing simulations in a common format
+4. doing analysis of stored simulations
 
 The core idea: read data of a specific format into a Python object, then write that
 object out in another format. 
