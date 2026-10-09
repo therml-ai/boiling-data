@@ -6,8 +6,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from boiling_data.boiling_data import BoilingSimulation
-from boiling_data.flashx.batch import flashx_collater
-from boiling_data.tasks.forecast.dataset import FlashXForecastDataset
+from boiling_data.tasks.forecast.flashx_batch import flashx_collater
+from boiling_data.tasks.forecast.flashx_dataset import FlashXForecastDataset
 
 FIELD_NAMES = ["temperature", "velfacex"]
 
