@@ -9,8 +9,10 @@ import pytest
 from boiling_data.boiling_data import BoilingSimulation, Field
 from boiling_data.bubbleml import (
     PARAMETERS_ATTRIBUTE,
+    UNITS_ATTRIBUTE,
     read_bubbleml,
     read_bubbleml_num_timesteps,
+    read_bubbleml_units,
     write_bubbleml,
 )
 
@@ -47,7 +49,9 @@ def test_fields_are_read_with_their_grids(bubbleml_case: BoilingSimulation) -> N
 def test_time_and_parameters(bubbleml_case: BoilingSimulation) -> None:
     np.testing.assert_allclose(bubbleml_case.time, [50.0, 52.5, 55.0], atol=1e-8)
     parameters = bubbleml_case.parameters
-    assert parameters.physical["wall_temp"] == 70.0
+    assert parameters.physical["wall_temp_scale"] == 70.0
+    assert parameters.heaters[0]["wall_temp_fraction"] == 1.0
+    assert parameters.heaters[0]["wall_temp"] == 70.0
     assert parameters.non_dimensional["stefan"] == 0.156
     assert parameters.discretization["num_blocks_x"] == 6
     (heater,) = parameters.heaters
@@ -159,3 +163,23 @@ def test_selecting_a_missing_field_raises(bubbleml_path: Path) -> None:
 
 def test_num_timesteps(bubbleml_path: Path) -> None:
     assert read_bubbleml_num_timesteps(bubbleml_path) == NUM_FRAMES
+
+
+def test_units_of_the_dimensional_parameters_are_stored(
+    bubbleml_path: Path, bubbleml_case: BoilingSimulation, tmp_path: Path
+) -> None:
+    rewritten = write_bubbleml(bubbleml_case, tmp_path / "copy.hdf5")
+    units = read_bubbleml_units(rewritten)
+    assert units["physical"]["wall_temp_scale"] == "degC"
+    assert units["physical"]["length_scale"] == "m"
+    assert units["heaters"] == {"wall_temp": "degC", "heat_flux": "W/m^2"}
+    assert read_bubbleml_units(bubbleml_path) == units
+
+
+def test_files_without_units_read_as_empty(
+    bubbleml_case: BoilingSimulation, tmp_path: Path
+) -> None:
+    path = write_bubbleml(bubbleml_case, tmp_path / "old.hdf5")
+    with h5py.File(path, "r+") as handle:
+        del handle.attrs[UNITS_ATTRIBUTE]
+    assert read_bubbleml_units(path) == {}

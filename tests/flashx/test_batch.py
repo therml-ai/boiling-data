@@ -65,7 +65,9 @@ def test_config_tensor_from_simulation_parameters(
     bubbleml_case: BoilingSimulation,
 ) -> None:
     batch = _batch([bubbleml_case.parameters.to_dict()])
-    tensor = batch.config_tensor(["stefan", "prandtl"], heater=["wallTemp", "xMax"])
+    tensor = batch.config_tensor(
+        ["stefan", "prandtl"], heater=["wall_temp_fraction", "xMax"]
+    )
     torch.testing.assert_close(tensor, torch.tensor([[0.156, 7.35, 1.0, 2.0]]))
 
 

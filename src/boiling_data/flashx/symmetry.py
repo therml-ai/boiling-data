@@ -50,13 +50,15 @@ def _mirror_parameters(parameters: SimulationParameters) -> SimulationParameters
     discretization = dict(parameters.discretization)
     discretization["x_min"] = -discretization["x_max"]
     discretization["num_blocks_x"] = 2 * discretization["num_blocks_x"]
-    discretization["xl_boundary_type"] = discretization["xr_boundary_type"]
     discretization["mirrored_about_x"] = 0.0
+    boundary = {side: dict(values) for side, values in parameters.boundary.items()}
+    boundary["left"] = dict(boundary["right"])
     return SimulationParameters(
         physical=dict(parameters.physical),
         non_dimensional=dict(parameters.non_dimensional),
         discretization=discretization,
         heaters=[_mirror_heater(heater) for heater in parameters.heaters],
+        boundary=boundary,
     )
 
 
@@ -71,11 +73,11 @@ def mirror_x(
             f"the symmetry axis x = 0 has to be the left boundary, but x_min is "
             f"{discretization['x_min']}"
         )
-    boundary = discretization["xl_boundary_type"]
-    if "slip" not in boundary or "noslip" in boundary:
+    left_type = simulation.parameters.boundary["left"].get("type", "")
+    if "slip" not in left_type or "noslip" in left_type:
         raise ValueError(
-            f"xl_boundary_type is {boundary!r}; a run symmetric about x = 0 has a "
-            "slip wall there"
+            f"the left boundary type is {left_type!r}; a run symmetric about x = 0 "
+            "has a slip wall there"
         )
     odd_fields = set(odd_fields)
     return BoilingSimulation(

@@ -1,18 +1,22 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from boiling_data.boiling_data import (
+    CONSTANT_HEAT_FLUX,
+    PHYSICAL_UNITS,
     BoilingSimulation,
     FloatArray,
     SimulationParameters,
+    heater_wall_temp,
 )
 from boiling_data.flashx.reader import (
     FIELD_NAMES,
-    HEATER_SCALARS,
+    HEATER_KEYS,
     NON_DIMENSIONAL_PARAMETERS,
 )
 
@@ -48,7 +52,7 @@ REQUIRED_DISCRETIZATION = (
     "t_initial",
 )
 EXPECTED_PHYSICAL = (
-    "wall_temp",
+    "wall_temp_scale",
     "bulk_temp",
     "sat_temp",
     "length_scale",
@@ -113,19 +117,32 @@ def check_parameters(parameters: SimulationParameters) -> list[Issue]:
             for name in positive
             if name in present and not present[name] > 0
         ]
+    without_unit = sorted(
+        name
+        for name, value in parameters.physical.items()
+        if isinstance(value, (int, float)) and name not in PHYSICAL_UNITS
+    )
+    if without_unit:
+        issues.append(
+            Issue(
+                Severity.WARNING,
+                "parameters",
+                f"physical {without_unit} have no unit in PHYSICAL_UNITS",
+            )
+        )
     return issues + _check_physical_consistency(parameters)
 
 
 def _check_physical_consistency(parameters: SimulationParameters) -> list[Issue]:
     physical, issues = parameters.physical, []
-    if {"wall_temp", "bulk_temp"} <= physical.keys() and not (
-        physical["wall_temp"] > physical["bulk_temp"]
+    if {"wall_temp_scale", "bulk_temp"} <= physical.keys() and not (
+        physical["wall_temp_scale"] > physical["bulk_temp"]
     ):
         issues.append(
             Issue(
                 Severity.ERROR,
                 "parameters",
-                f"wall_temp {physical['wall_temp']} is not above bulk_temp "
+                f"wall_temp_scale {physical['wall_temp_scale']} is not above bulk_temp "
                 f"{physical['bulk_temp']}, so temperatures cannot be "
                 "re-dimensionalized",
             )
@@ -153,12 +170,12 @@ def _check_physical_consistency(parameters: SimulationParameters) -> list[Issue]
                 )
             )
     if (
-        {"sat_temp", "bulk_temp", "wall_temp"} <= physical.keys()
+        {"sat_temp", "bulk_temp", "wall_temp_scale"} <= physical.keys()
         and "tsat" in parameters.non_dimensional
-        and physical["wall_temp"] > physical["bulk_temp"]
+        and physical["wall_temp_scale"] > physical["bulk_temp"]
     ):
         expected = (physical["sat_temp"] - physical["bulk_temp"]) / (
-            physical["wall_temp"] - physical["bulk_temp"]
+            physical["wall_temp_scale"] - physical["bulk_temp"]
         )
         tsat = parameters.non_dimensional["tsat"]
         if not np.isclose(tsat, expected, atol=1e-3):
@@ -178,12 +195,13 @@ def check_heaters(parameters: SimulationParameters) -> list[Issue]:
         return [Issue(Severity.WARNING, "heaters", "the simulation has no heaters")]
     discretization, issues = parameters.discretization, []
     for index, heater in enumerate(parameters.heaters):
-        missing = [name for name in HEATER_SCALARS if name not in heater]
+        missing = [name for name in _required_heater_keys(heater) if name not in heater]
         if missing:
             issues.append(
                 Issue(Severity.ERROR, "heaters", f"heater {index} is missing {missing}")
             )
             continue
+        issues += _check_heater_wall_temp(index, heater, parameters.physical)
         if not heater["xMin"] < heater["xMax"]:
             issues.append(
                 Issue(
@@ -262,6 +280,37 @@ def check_finite(simulation: BoilingSimulation) -> list[Issue]:
     return issues
 
 
+def _required_heater_keys(heater: dict[str, Any]) -> list[str]:
+    """Every heater has a type and its extent and contact parameters; a constant
+    wall temperature heater also its wall_temp_fraction, a constant heat flux heater
+    its heat_flux."""
+    shared = [name for name in HEATER_KEYS if name != "wall_temp_fraction"]
+    if heater.get("type") == CONSTANT_HEAT_FLUX:
+        return ["type", *shared, "heat_flux"]
+    return ["type", *shared, "wall_temp_fraction"]
+
+
+def _check_heater_wall_temp(
+    index: int, heater: dict[str, Any], physical: dict[str, Any]
+) -> list[Issue]:
+    if "wall_temp" not in heater or not {"bulk_temp", "wall_temp_scale"} <= (
+        physical.keys()
+    ):
+        return []
+    expected = heater_wall_temp(heater["wall_temp_fraction"], physical)
+    if np.isclose(heater["wall_temp"], expected, rtol=1e-6):
+        return []
+    return [
+        Issue(
+            Severity.WARNING,
+            "heaters",
+            f"heater {index} wall_temp {heater['wall_temp']} C does not match its "
+            f"wall_temp_fraction {heater['wall_temp_fraction']}, which gives "
+            f"{expected} C",
+        )
+    ]
+
+
 def check_temperature_range(
     simulation: BoilingSimulation, tolerance: float = 1e-2
 ) -> list[Issue]:
@@ -270,9 +319,9 @@ def check_temperature_range(
     if TEMPERATURE not in simulation.fields:
         return []
     wall_temps = [
-        heater["wallTemp"]
+        heater["wall_temp_fraction"]
         for heater in simulation.parameters.heaters
-        if "wallTemp" in heater
+        if "wall_temp_fraction" in heater
     ]
     upper = max(wall_temps, default=1.0)
     lower = min(0.0, simulation.parameters.non_dimensional.get("tsat", 0.0))

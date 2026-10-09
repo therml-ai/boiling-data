@@ -5,7 +5,7 @@ from boiling_data.boiling_data import BoilingSimulation, Field, SimulationParame
 from boiling_data.flashx.heat_flux import dimensional_temperature, heater_heat_flux
 
 PHYSICAL = {
-    "wall_temp": 70.0,
+    "wall_temp_scale": 70.0,
     "bulk_temp": 50.0,
     "length_scale": 1e-3,
     "thco_liquid": 0.05,
@@ -20,7 +20,7 @@ def _simulation(temperature: np.ndarray, sdf: np.ndarray) -> BoilingSimulation:
     parameters = SimulationParameters(
         physical=PHYSICAL,
         non_dimensional={"thcogas": 0.2},
-        heaters=[{"xMin": 0.5, "xMax": 1.5, "yMax": 0.0, "wallTemp": 1.0}],
+        heaters=[{"xMin": 0.5, "xMax": 1.5, "yMax": 0.0, "wall_temp_fraction": 1.0}],
     )
     return BoilingSimulation(
         fields={
@@ -66,3 +66,10 @@ def test_heat_flux_of_bubbleml_case(bubbleml_case: BoilingSimulation) -> None:
     assert heat_flux.flux.shape == (bubbleml_case.num_timesteps, len(heat_flux.x))
     assert not heat_flux.liquid.all()
     assert (heat_flux.flux > 0).all()
+
+
+def test_heat_flux_of_a_heat_flux_heater_is_not_computed() -> None:
+    simulation = _simulation(np.zeros((1, 2, 4)), np.zeros((1, 2, 4)))
+    simulation.parameters.heaters[0] = {"type": "constant_heat_flux", "heat_flux": 5e4}
+    with pytest.raises(ValueError, match="prescribes its heat flux"):
+        heater_heat_flux(simulation)

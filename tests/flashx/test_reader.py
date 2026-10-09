@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, SimulationParameters
-from boiling_data.flashx.reader import read_flashx
+from boiling_data.flashx.reader import read_flashx, read_heater
 
 NUM_FRAMES, HEIGHT, WIDTH = 3, 288, 96
 NX_BLOCK, NY_BLOCK = 16, 16
@@ -108,7 +108,8 @@ def test_physical_parameters_come_from_parameters_json(
 ) -> None:
     physical = half_domain.parameters.physical
     assert physical["fluid"] == "FC-72"
-    assert physical["wall_temp"] == 70.0
+    assert physical["wall_temp_scale"] == 70.0
+    assert "wall_temp" not in physical
     assert physical["sat_temp"] == 58.0
     assert physical["bulk_temp"] == 58.0
     assert physical["length_scale"] == 7e-4
@@ -132,13 +133,20 @@ def test_non_dimensional_parameters(half_domain: BoilingSimulation) -> None:
     }
 
 
+def test_boundary_types_come_from_the_runtime_parameters(
+    half_domain: BoilingSimulation,
+) -> None:
+    assert half_domain.parameters.boundary == {
+        "left": {"type": "slip_ins"},
+        "right": {"type": "noslip_ins"},
+        "top": {"type": "outflow_ins"},
+        "bottom": {"type": "noslip_ins"},
+    }
+
+
 def test_discretization_parameters(half_domain: BoilingSimulation) -> None:
     assert half_domain.parameters.discretization == {
         "geometry": "cartesian",
-        "xl_boundary_type": "slip_ins",
-        "xr_boundary_type": "noslip_ins",
-        "yl_boundary_type": "noslip_ins",
-        "yr_boundary_type": "outflow_ins",
         "num_blocks_x": 6,
         "num_blocks_y": 18,
         "nx_block": NX_BLOCK,
@@ -174,7 +182,13 @@ def test_run_without_heater_files_has_no_heaters(
 
 def test_parameters_round_trip_through_a_dict(half_domain: BoilingSimulation) -> None:
     record = half_domain.parameters.to_dict()
-    assert set(record) == {"physical", "non_dimensional", "discretization", "heaters"}
+    assert set(record) == {
+        "physical",
+        "non_dimensional",
+        "discretization",
+        "heaters",
+        "boundary",
+    }
     assert SimulationParameters.from_dict(record) == half_domain.parameters
 
 
@@ -211,3 +225,20 @@ def test_frames_from_different_runs_are_rejected(
 def test_directory_without_plotfiles_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         read_flashx(tmp_path)
+
+
+def test_heater_wall_temp_is_stored_as_a_fraction(tmp_path: Path) -> None:
+    path = tmp_path / "INS_Pool_Boiling_hdf5_htr_0000"
+    with h5py.File(path, "w") as handle:
+        for name, value in {"xMin": -1.0, "xMax": 1.0, "wallTemp": 0.5}.items():
+            handle.create_dataset(f"heater/{name}", data=np.array([value]))
+        handle.create_dataset("init/radii", data=np.array([0.1]))
+        handle.create_dataset("site/x", data=np.array([0.0]))
+        handle.create_dataset("site/y", data=np.array([0.0]))
+    heater = read_heater(path)
+    assert heater["wall_temp_fraction"] == 0.5
+    assert heater["type"] == "constant_wall_temp"
+    assert "wallTemp" not in heater
+    physical = {"bulk_temp": 58.0, "wall_temp_scale": 70.0}
+    stored = SimulationParameters(physical=physical, heaters=[heater]).heaters[0]
+    assert stored["wall_temp"] == 64.0

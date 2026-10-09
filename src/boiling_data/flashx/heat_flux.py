@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from boiling_data.boiling_data import BoilingSimulation, FloatArray
+from boiling_data.boiling_data import CONSTANT_HEAT_FLUX, BoilingSimulation, FloatArray
 
 HEAT_FLUX_FIELDS = ("temperature", "dfun")
 
@@ -12,8 +12,9 @@ HEAT_FLUX_FIELDS = ("temperature", "dfun")
 def dimensional_temperature(
     temperature: FloatArray | float, physical: dict[str, Any]
 ) -> FloatArray:
-    """Temperatures are stored as (T - T_bulk) / (T_wall - T_bulk); returns C."""
-    bulk, wall = float(physical["bulk_temp"]), float(physical["wall_temp"])
+    """Temperatures are stored as (T - T_bulk) / (wall_temp_scale - T_bulk);
+    returns C."""
+    bulk, wall = float(physical["bulk_temp"]), float(physical["wall_temp_scale"])
     return np.asarray(bulk + np.asarray(temperature) * (wall - bulk), dtype=np.float64)
 
 
@@ -40,6 +41,11 @@ def heater_heat_flux(
     parameters = simulation.parameters
     physical = parameters.physical
     heater = parameters.heaters[heater_index]
+    if heater.get("type") == CONSTANT_HEAT_FLUX:
+        raise ValueError(
+            f"heater {heater_index} prescribes its heat flux, {heater['heat_flux']} "
+            "W/m^2; the flux computed here needs a fixed wall temperature"
+        )
     temperature, sdf = simulation.field("temperature"), simulation.field("dfun")
     if temperature.data.shape != sdf.data.shape:
         raise ValueError(
@@ -56,7 +62,7 @@ def heater_heat_flux(
     row = int(above[0])
 
     distance = (temperature.grid_y[row] - heater["yMax"]) * physical["length_scale"]
-    wall = dimensional_temperature(heater["wallTemp"], physical)
+    wall = float(heater["wall_temp"])
     cell = dimensional_temperature(temperature.data[:, row, columns], physical)
     liquid = sdf.data[:, row, columns] < 0
     thco_liquid = float(physical["thco_liquid"])

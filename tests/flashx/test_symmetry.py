@@ -19,14 +19,12 @@ def _half_parameters(
     xl_boundary_type: str = "slip_ins", heaters: list[dict[str, Any]] | None = None
 ) -> SimulationParameters:
     return SimulationParameters(
-        discretization={
-            "x_min": 0.0,
-            "x_max": 2.0,
-            "num_blocks_x": 6,
-            "xl_boundary_type": xl_boundary_type,
-            "xr_boundary_type": "noslip_ins",
-        },
+        discretization={"x_min": 0.0, "x_max": 2.0, "num_blocks_x": 6},
         heaters=heaters or [],
+        boundary={
+            "left": {"type": xl_boundary_type},
+            "right": {"type": "noslip_ins"},
+        },
     )
 
 
@@ -94,7 +92,7 @@ def test_discretization_describes_the_full_domain(
     discretization = full_domain.parameters.discretization
     assert discretization["x_min"] == -2.0
     assert discretization["num_blocks_x"] == 12
-    assert discretization["xl_boundary_type"] == "noslip_ins"
+    assert full_domain.parameters.boundary["left"]["type"] == "noslip_ins"
     assert discretization["mirrored_about_x"] == 0.0
 
 
@@ -138,3 +136,17 @@ def test_mirroring_needs_a_slip_wall_on_the_axis() -> None:
     )
     with pytest.raises(ValueError, match="slip"):
         mirror_x(simulation)
+
+
+def test_mirrored_left_boundary_is_the_right_one() -> None:
+    half = BoilingSimulation(
+        fields={},
+        parameters=SimulationParameters(
+            discretization=_half_parameters().discretization,
+            boundary={"left": {"type": "slip"}, "right": {"type": "noslip"}},
+        ),
+        time=np.zeros(1),
+    )
+    boundary = mirror_x(half).parameters.boundary
+    assert boundary["left"] == boundary["right"] == {"type": "noslip"}
+    assert half.parameters.boundary["left"] == {"type": "slip"}

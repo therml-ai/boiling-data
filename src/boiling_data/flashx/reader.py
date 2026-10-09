@@ -10,6 +10,8 @@ import numpy as np
 import numpy.typing as npt
 
 from boiling_data.boiling_data import (
+    BOUNDARY_TYPE_KEYS,
+    CONSTANT_WALL_TEMP,
     BoilingSimulation,
     Field,
     FloatArray,
@@ -62,6 +64,10 @@ HEATER_SCALARS = (
     "velContact",
     "nucWaitTime",
 )
+# Flash-X's heater wallTemp is non-dimensional; it is stored as the fraction of the
+# way from the bulk to the wall temperature scale, beside the wall_temp in C
+HEATER_RENAMES = {"wallTemp": "wall_temp_fraction"}
+HEATER_KEYS = tuple(HEATER_RENAMES.get(name, name) for name in HEATER_SCALARS)
 
 
 def _runtime_parameters(frame: h5py.File, kind: str) -> dict[str, Any]:
@@ -257,10 +263,6 @@ def read_discretization(frame: h5py.File, layout: BlockLayout) -> dict[str, Any]
     reals = _runtime_parameters(frame, "real")
     return {
         "geometry": strings["geometry"],
-        "xl_boundary_type": strings["xl_boundary_type"],
-        "xr_boundary_type": strings["xr_boundary_type"],
-        "yl_boundary_type": strings["yl_boundary_type"],
-        "yr_boundary_type": strings["yr_boundary_type"],
         "num_blocks_x": layout.num_blocks_x,
         "num_blocks_y": layout.num_blocks_y,
         "nx_block": layout.nx_block,
@@ -273,6 +275,11 @@ def read_discretization(frame: h5py.File, layout: BlockLayout) -> dict[str, Any]
         "y_min": layout.y_min,
         "y_max": layout.y_max,
     }
+
+
+def read_boundary(frame: h5py.File) -> dict[str, dict[str, Any]]:
+    strings = _runtime_parameters(frame, "string")
+    return {side: {"type": strings[key]} for side, key in BOUNDARY_TYPE_KEYS.items()}
 
 
 def read_non_dimensional(frame: h5py.File) -> dict[str, float]:
@@ -289,8 +296,9 @@ def read_non_dimensional(frame: h5py.File) -> dict[str, float]:
 
 
 def read_physical(directory: Path) -> dict[str, Any]:
-    """The Physical table of parameters.json, when the case has one. Cases
-    written before bulk_temp was recorded are saturated."""
+    """The Physical table of parameters.json, when the case has one, with its
+    wall_temp as the wall_temp_scale. Cases written before bulk_temp was recorded
+    are saturated."""
     case_json = directory / "parameters.json"
     if not case_json.exists():
         return {}
@@ -298,16 +306,20 @@ def read_physical(directory: Path) -> dict[str, Any]:
         physical: dict[str, Any] = dict(json.load(handle).get("Physical", {}))
     if "bulk_temp" not in physical and "sat_temp" in physical:
         physical["bulk_temp"] = physical["sat_temp"]
+    if "wall_temp" in physical:
+        physical["wall_temp_scale"] = physical.pop("wall_temp")
     return physical
 
 
 def read_heater(heater_file: Path) -> dict[str, Any]:
     with h5py.File(heater_file, "r") as heater:
         record: dict[str, Any] = {
-            name: float(heater["heater"][name][()].ravel()[0])
+            HEATER_RENAMES.get(name, name): float(heater["heater"][name][()].ravel()[0])
             for name in HEATER_SCALARS
             if name in heater["heater"]
         }
+        # Flash-X's heater files hold a wall temperature, never a heat flux
+        record["type"] = CONSTANT_WALL_TEMP
         record["nuc_seed_radii"] = heater["init"]["radii"][()].ravel().tolist()
         record["nuc_sites_x"] = heater["site"]["x"][()].ravel().tolist()
         record["nuc_sites_y"] = heater["site"]["y"][()].ravel().tolist()
@@ -332,6 +344,7 @@ def read_flashx(
         layout = block_layout(first)
         discretization = read_discretization(first, layout)
         non_dimensional = read_non_dimensional(first)
+        boundary = read_boundary(first)
 
     parameters = SimulationParameters(
         physical=read_physical(directory),
@@ -340,6 +353,7 @@ def read_flashx(
         heaters=[
             read_heater(path) for path in _matching_files(directory, HEATER_PATTERN)
         ],
+        boundary=boundary,
     )
     simulation = BoilingSimulation(
         fields=read_fields(plotfiles, layout),

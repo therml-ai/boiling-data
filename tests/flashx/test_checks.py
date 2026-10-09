@@ -29,13 +29,13 @@ def test_missing_and_nonsensical_parameters(case: BoilingSimulation) -> None:
     del case.parameters.physical["thco_liquid"]
     del case.parameters.discretization["dt"]
     del case.parameters.non_dimensional["stefan"]
-    case.parameters.physical["wall_temp"] = case.parameters.physical["bulk_temp"]
+    case.parameters.physical["wall_temp_scale"] = case.parameters.physical["bulk_temp"]
     case.parameters.non_dimensional["prandtl"] = 0.0
     messages = [str(issue) for issue in check_simulation(case)]
     assert any("[warning]" in m and "thco_liquid" in m for m in messages)
     assert any("[error]" in m and "stefan" in m for m in messages)
     assert any("[error]" in m and "'dt'" in m for m in messages)
-    assert any("[error]" in m and "wall_temp" in m for m in messages)
+    assert any("[error]" in m and "wall_temp_scale" in m for m in messages)
     assert any("[error]" in m and "prandtl" in m for m in messages)
 
 
@@ -100,3 +100,27 @@ def test_divergence_at_the_interface_is_allowed(case: BoilingSimulation) -> None
     frame, row, column = np.argwhere(np.abs(sdf) < 0.01)[0]
     case.field("velfacex").data[frame, row, column + 1] += 0.1
     assert check_divergence(case) == []
+
+
+def test_heater_wall_temp_disagreeing_with_its_fraction(
+    case: BoilingSimulation,
+) -> None:
+    case.parameters.heaters[0]["wall_temp"] += 5.0
+    messages = [str(issue) for issue in case.check()]
+    assert any("[warning]" in m and "wall_temp_fraction" in m for m in messages)
+
+
+def test_heat_flux_heater_needs_its_flux(case: BoilingSimulation) -> None:
+    heater = case.parameters.heaters[0]
+    heater["type"] = "constant_heat_flux"
+    messages = [str(issue) for issue in case.check()]
+    assert any("[error]" in m and "heat_flux" in m for m in messages)
+    heater["heat_flux"] = 5e4
+    del heater["wall_temp_fraction"], heater["wall_temp"]
+    assert not _found(case.check(), "heaters", Severity.ERROR)
+
+
+def test_physical_parameter_without_a_unit(case: BoilingSimulation) -> None:
+    case.parameters.physical["heater_power"] = 12.0
+    messages = [str(issue) for issue in case.check()]
+    assert any("[warning]" in m and "heater_power" in m for m in messages)

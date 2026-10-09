@@ -12,9 +12,11 @@ from boiling_data.boiling_data import (
     Field,
     FloatArray,
     SimulationParameters,
+    parameter_units,
 )
 
 PARAMETERS_ATTRIBUTE = "parameters"
+UNITS_ATTRIBUTE = "units"
 
 
 def _faces(discretization: dict[str, Any], axis: str) -> FloatArray:
@@ -53,7 +55,8 @@ def _check_field_on_grid(name: str, field: Field, grid: dict[str, FloatArray]) -
 
 def write_bubbleml(simulation: BoilingSimulation, path: str | os.PathLike[str]) -> Path:
     """One HDF5 file: every field as a dataset, ``time``, the grid coordinates,
-    and the grouped parameters as JSON in a root attribute."""
+    and the grouped parameters and the units of the dimensional ones as JSON in
+    root attributes."""
     path = Path(path)
     grid = _grid(simulation.parameters.discretization)
     for name, field in simulation.fields.items():
@@ -62,6 +65,9 @@ def write_bubbleml(simulation: BoilingSimulation, path: str | os.PathLike[str]) 
     with h5py.File(path, "w") as handle:
         handle.attrs[PARAMETERS_ATTRIBUTE] = json.dumps(
             simulation.parameters.to_dict(), indent=4
+        )
+        handle.attrs[UNITS_ATTRIBUTE] = json.dumps(
+            parameter_units(simulation.parameters), indent=4
         )
         for name, field in simulation.fields.items():
             handle.create_dataset(name, data=field.data)
@@ -139,6 +145,15 @@ def read_bubbleml_parameters(path: str | os.PathLike[str]) -> SimulationParamete
     path = Path(path)
     with h5py.File(path, "r") as handle:
         return _read_parameters(handle, path)
+
+
+def read_bubbleml_units(path: str | os.PathLike[str]) -> dict[str, dict[str, str]]:
+    """Files written before units were recorded have none."""
+    with h5py.File(path, "r") as handle:
+        if UNITS_ATTRIBUTE not in handle.attrs:
+            return {}
+        units: dict[str, dict[str, str]] = json.loads(handle.attrs[UNITS_ATTRIBUTE])
+        return units
 
 
 def _stored_field_names(handle: h5py.File, grid: dict[str, FloatArray]) -> list[str]:
