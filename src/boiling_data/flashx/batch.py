@@ -40,17 +40,30 @@ class FlashXBatch:
     config_keys: ConfigKeys = field(default_factory=dict)
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     _config_rows: list[list[float]] = field(init=False, repr=False)
+    _parameters: dict[tuple[str, str], torch.Tensor] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         self.fields = {
             name: tensor.to(self.device) for name, tensor in self.fields.items()
         }
         for name, tensor in self.fields.items():
+            if tensor.ndim < 2:
+                raise ValueError(
+                    f"field {name!r} of shape {tuple(tensor.shape)} has no time axis "
+                    "after the batch"
+                )
             if tensor.shape[0] != self.batch_size:
                 raise ValueError(
                     f"field {name!r} has batch size {tensor.shape[0]} but there are "
                     f"{self.batch_size} configs"
                 )
+        lengths = {name: tensor.shape[1] for name, tensor in self.fields.items()}
+        if len(set(lengths.values())) > 1:
+            raise ValueError(
+                f"the fields do not share one number of timesteps: {lengths}"
+            )
         self.config_keys = _validated_config_keys(self.config_keys)
         _check_configs_have_keys(self.configs, self.config_keys)
         self._config_rows = [
@@ -89,6 +102,73 @@ class FlashXBatch:
             self._config_rows, dtype=torch.float32, device=self.device
         ).reshape(self.batch_size, width)
 
+    def parameter(self, group: str, name: str) -> torch.Tensor:
+        """[batch_size] float32 tensor of one numeric config parameter of every
+        sample, e.g. ``parameter("physical", "bulk_temp")``, whether or not it is in
+        config_keys. Built on first use and reused."""
+        key = (group, name)
+        if key not in self._parameters:
+            keys = _validated_config_keys({group: [name]})
+            _check_configs_have_keys(self.configs, keys)
+            values = [_config_row(config, keys)[0] for config in self.configs]
+            self._parameters[key] = torch.tensor(
+                values, dtype=torch.float32, device=self.device
+            )
+        return self._parameters[key]
+
+    def with_fields(self, fields: dict[str, torch.Tensor]) -> "FlashXBatch":
+        """A batch of exactly these fields, such as a model's predictions, for the
+        same samples: the configs, config_keys and device are kept. To keep some
+        of this batch's fields too, pass ``{**batch.fields, **fields}``."""
+        return FlashXBatch(
+            dict(fields), list(self.configs), self.config_keys, self.device
+        )
+
+    @property
+    def num_timesteps(self) -> int:
+        """The length of the time axis, the one after the batch, which every field
+        shares."""
+        if not self.fields:
+            raise ValueError("the batch has no fields to count timesteps of")
+        return int(next(iter(self.fields.values())).shape[1])
+
+    def head_time_window(self, num_timesteps: int) -> "FlashXBatch":
+        self._check_window(num_timesteps)
+        return self._select_timesteps(slice(None, num_timesteps))
+
+    def tail_time_window(self, num_timesteps: int) -> "FlashXBatch":
+        self._check_window(num_timesteps)
+        return self._select_timesteps(slice(-num_timesteps, None))
+
+    def extend(self, other: "FlashXBatch") -> "FlashXBatch":
+        """This batch's frames followed by other's, as one step of a rollout:
+        ``history = history.extend(prediction).tail_time_window(window)``."""
+        if other.fields.keys() != self.fields.keys():
+            raise ValueError(
+                f"cannot extend fields {sorted(self.fields)} with "
+                f"{sorted(other.fields)}"
+            )
+        if other.configs != self.configs:
+            raise ValueError("cannot extend a batch with frames of different samples")
+        return self.with_fields(
+            {
+                name: torch.cat((tensor, other.fields[name].to(self.device)), dim=1)
+                for name, tensor in self.fields.items()
+            }
+        )
+
+    def _check_window(self, num_timesteps: int) -> None:
+        if not 1 <= num_timesteps <= self.num_timesteps:
+            raise ValueError(
+                f"num_timesteps must be in [1, {self.num_timesteps}], not "
+                f"{num_timesteps}"
+            )
+
+    def _select_timesteps(self, steps: slice) -> "FlashXBatch":
+        return self.with_fields(
+            {name: tensor[:, steps] for name, tensor in self.fields.items()}
+        )
+
     def stacked_fields(self, names: Sequence[str]) -> torch.Tensor:
         """[batch_size, ..., len(names)] tensor of the named fields as channels in
         the last dimension, in the order given. The fields must share a shape, so
@@ -114,6 +194,14 @@ class FlashXBatch:
             channels.append((f"{name} low faces", tensor.narrow(axis, 0, num_cells)))
             channels.append((f"{name} high faces", tensor.narrow(axis, 1, num_cells)))
         return _stack_channels(channels)
+
+    def from_stacked_field_cells(
+        self, stacked: torch.Tensor, names: Sequence[str]
+    ) -> "FlashXBatch":
+        """The inverse of ``stack_field_cells``: a batch of the named fields, for
+        the same samples, from a [batch_size, T, Y, X, num_channels] tensor such
+        as a model's output. See ``unstack_field_cells``."""
+        return self.with_fields(unstack_field_cells(stacked, names))
 
     def _require_fields(self, names: Sequence[str]) -> None:
         require_non_empty_sequence("names", names)
@@ -188,6 +276,47 @@ def _collate_samples(
     }
     return FlashXBatch(
         fields, [sample.config for sample in samples], config_keys, device
+    )
+
+
+def unstack_field_cells(
+    stacked: torch.Tensor, names: Sequence[str]
+) -> dict[str, torch.Tensor]:
+    """The named fields of a [..., T, Y, X, num_channels] tensor laid out as
+    ``FlashXBatch.stack_field_cells`` lays them out, each back on its own grid.
+    Every interior face is the high face of one cell and the low face of the
+    next, so its two channels are averaged; they are equal for stacked data, and
+    the average weighs both of a model's predictions of the face alike."""
+    require_non_empty_sequence("names", names)
+    num_channels = sum(2 if name in FACE_FIELD_AXES else 1 for name in names)
+    if stacked.shape[-1] != num_channels:
+        raise ValueError(
+            f"fields {list(names)} take {num_channels} channels, but the tensor has "
+            f"{stacked.shape[-1]}"
+        )
+    fields: dict[str, torch.Tensor] = {}
+    channel = 0
+    for name in names:
+        axis = FACE_FIELD_AXES.get(name)
+        if axis is None:
+            fields[name] = stacked[..., channel]
+            channel += 1
+            continue
+        fields[name] = _faces_from_cells(
+            stacked[..., channel], stacked[..., channel + 1], axis
+        )
+        channel += 2
+    return fields
+
+
+def _faces_from_cells(low: torch.Tensor, high: torch.Tensor, axis: int) -> torch.Tensor:
+    num_cells = low.shape[axis]
+    interior = 0.5 * (
+        low.narrow(axis, 1, num_cells - 1) + high.narrow(axis, 0, num_cells - 1)
+    )
+    return torch.cat(
+        (low.narrow(axis, 0, 1), interior, high.narrow(axis, num_cells - 1, 1)),
+        dim=axis,
     )
 
 
@@ -267,4 +396,7 @@ def _parameter(parameters: dict[str, Any], name: str, kind: str) -> float:
         raise KeyError(
             f"config has no {kind} parameter {name!r}; it has {sorted(parameters)}"
         )
-    return float(parameters[name])
+    value = parameters[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{kind} parameter {name!r} is {value!r}, not a number")
+    return float(value)
