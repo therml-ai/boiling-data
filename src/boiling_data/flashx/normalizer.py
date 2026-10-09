@@ -76,10 +76,7 @@ class NormalizerWrapper(nn.Module):
 
     def set_extra_state(self, state: dict[str, Any]) -> None:
         self.statistics = _validated_statistics(state["statistics"])
-        # checkpoints saved before config_scaling existed were all standardized
-        self.config_scaling = _validated_config_scaling(
-            state.get("config_scaling", "standard")
-        )
+        self.config_scaling = _validated_config_scaling(state["config_scaling"])
 
     def _transform(self, batch: FlashXBatch, transform: Transform) -> FlashXBatch:
         fields = {

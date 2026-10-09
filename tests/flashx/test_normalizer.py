@@ -239,9 +239,3 @@ def test_config_scaling_is_saved_with_the_state_dict() -> None:
 
 def test_config_scaling_defaults_to_min_max() -> None:
     assert NormalizerWrapper(STATISTICS).config_scaling == "min_max"
-
-
-def test_checkpoints_from_before_config_scaling_load_as_standard() -> None:
-    restored = NormalizerWrapper(STATISTICS)
-    restored.set_extra_state({"statistics": STATISTICS})
-    assert restored.config_scaling == "standard"
