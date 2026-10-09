@@ -1,0 +1,169 @@
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+import torch
+from torch import nn
+
+from boiling_data.flashx.batch import FlashXBatch
+from boiling_data.flashx.normalizer import NormalizerWrapper
+from boiling_data.statistics import dataset_statistics
+
+
+def _entry(mean: float, std: float) -> dict[str, float]:
+    return {"count": 2, "mean": mean, "std": std, "min": mean - std, "max": mean + std}
+
+
+STATISTICS = {
+    "fields": {"temperature": _entry(1.0, 2.0)},
+    "config": {
+        "physical": {"bulk_temp": _entry(50.0, 10.0)},
+        "non_dimensional": {"stefan": _entry(0.5, 0.25), "gravy": _entry(-1.0, 0.0)},
+        "heaters": {"wall_temp": _entry(70.0, 5.0)},
+    },
+}
+
+
+def _config(bulk_temp: float, wall_temps: list[float]) -> dict[str, Any]:
+    return {
+        "physical": {"fluid": "FC-72", "bulk_temp": bulk_temp},
+        "non_dimensional": {"stefan": 0.75, "gravy": -1.0},
+        "heaters": [
+            {"type": "constant_wall_temp", "wall_temp": temp, "nuc_sites_x": [0.0]}
+            for temp in wall_temps
+        ],
+    }
+
+
+def _batch(temperature: float = 5.0) -> FlashXBatch:
+    return FlashXBatch(
+        {"temperature": torch.full((2, 3, 4, 5), temperature)},
+        [_config(60.0, [75.0]), _config(40.0, [65.0])],
+        {"non_dimensional": ["stefan"], "heaters": ["wall_temp"]},
+    )
+
+
+def test_fields_are_standardized_by_their_own_statistics() -> None:
+    normalized = NormalizerWrapper(STATISTICS).normalize(_batch(temperature=5.0))
+    torch.testing.assert_close(
+        normalized.fields["temperature"], torch.full((2, 3, 4, 5), 2.0)
+    )
+
+
+def test_config_values_are_standardized_at_the_same_group_and_key() -> None:
+    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    config = normalized.configs[0]
+    assert config["physical"]["bulk_temp"] == pytest.approx(1.0)
+    assert config["non_dimensional"]["stefan"] == pytest.approx(1.0)
+    assert config["heaters"][0]["wall_temp"] == pytest.approx(1.0)
+    assert normalized.configs[1]["heaters"][0]["wall_temp"] == pytest.approx(-1.0)
+
+
+def test_normalized_batches_give_normalized_conditioning_and_parameters() -> None:
+    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    torch.testing.assert_close(
+        normalized.config_tensor(), torch.tensor([[1.0, 1.0], [1.0, -1.0]])
+    )
+    torch.testing.assert_close(
+        normalized.parameter("physical", "bulk_temp"), torch.tensor([1.0, -1.0])
+    )
+
+
+def test_values_without_a_numeric_meaning_pass_through() -> None:
+    config = NormalizerWrapper(STATISTICS).normalize(_batch()).configs[0]
+    assert config["physical"]["fluid"] == "FC-72"
+    assert config["heaters"][0]["type"] == "constant_wall_temp"
+    assert config["heaters"][0]["nuc_sites_x"] == (0.0,)
+
+
+def test_a_constant_value_only_has_its_mean_subtracted() -> None:
+    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    assert normalized.configs[0]["non_dimensional"]["gravy"] == 0.0
+
+
+def test_unnormalize_inverts_normalize() -> None:
+    normalizer = NormalizerWrapper(STATISTICS)
+    batch = _batch()
+    restored = normalizer.unnormalize(normalizer.normalize(batch))
+    torch.testing.assert_close(
+        restored.fields["temperature"], batch.fields["temperature"]
+    )
+    for original, round_trip in zip(batch.configs, restored.configs, strict=True):
+        assert round_trip["physical"]["bulk_temp"] == pytest.approx(
+            original["physical"]["bulk_temp"]
+        )
+        assert round_trip["heaters"][0]["wall_temp"] == pytest.approx(
+            original["heaters"][0]["wall_temp"]
+        )
+    torch.testing.assert_close(restored.config_tensor(), batch.config_tensor())
+
+
+def test_missing_statistics_are_reported() -> None:
+    normalizer = NormalizerWrapper(STATISTICS)
+    with pytest.raises(KeyError, match="no statistics for field 'dfun'"):
+        normalizer.normalize(_batch().with_fields({"dfun": torch.zeros(2, 3, 4, 5)}))
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 2, 2)},
+        [{"physical": {"bulk_temp": 58.0, "rho_liquid": 1620.0}}],
+    )
+    with pytest.raises(KeyError, match=r"'physical\.rho_liquid'"):
+        normalizer.normalize(batch)
+
+
+def test_statistics_need_fields_and_config() -> None:
+    with pytest.raises(ValueError, match=r"missing \['config'\]"):
+        NormalizerWrapper({"fields": {}})
+
+
+class _Recorder(nn.Module):
+    """Returns its input, recording what it was given."""
+
+    def forward(self, batch: FlashXBatch) -> FlashXBatch:
+        self.seen = batch
+        return batch
+
+
+def test_forward_runs_the_module_on_normalized_batches() -> None:
+    recorder = _Recorder()
+    wrapper = NormalizerWrapper(STATISTICS, recorder)
+    batch = _batch(temperature=5.0)
+    output = wrapper(batch)
+    torch.testing.assert_close(
+        recorder.seen.fields["temperature"], torch.full((2, 3, 4, 5), 2.0)
+    )
+    torch.testing.assert_close(
+        output.fields["temperature"], batch.fields["temperature"]
+    )
+
+
+def test_forward_needs_a_module() -> None:
+    with pytest.raises(RuntimeError, match="no module"):
+        NormalizerWrapper(STATISTICS)(_batch())
+
+
+def test_statistics_are_saved_with_the_state_dict() -> None:
+    state = NormalizerWrapper(STATISTICS).state_dict()
+    restored = NormalizerWrapper({"fields": {}, "config": {}})
+    restored.load_state_dict(state)
+    assert restored.statistics == STATISTICS
+
+
+def test_statistics_file_from_a_dataset_normalizes_its_batches(
+    bubbleml_path: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "statistics.json"
+    statistics = dataset_statistics([bubbleml_path], ["temperature"], 64)
+    path.write_text(json.dumps(statistics))
+    normalizer = NormalizerWrapper.from_json(path)
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 2, 2)},
+        [{"physical": {"bulk_temp": 58.0}, "non_dimensional": {"stefan": 0.156}}],
+    )
+    normalized = normalizer.normalize(batch)
+    mean = statistics["fields"]["temperature"]["mean"]
+    std = statistics["fields"]["temperature"]["std"]
+    torch.testing.assert_close(
+        normalized.fields["temperature"], torch.full((1, 1, 2, 2), -mean / std)
+    )
+    assert normalized.configs[0]["non_dimensional"]["stefan"] == 0.0

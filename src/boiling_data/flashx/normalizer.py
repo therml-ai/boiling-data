@@ -1,0 +1,137 @@
+import json
+import os
+from collections.abc import Callable, Mapping
+from typing import Any
+
+from torch import nn
+
+from boiling_data.flashx.batch import FlashXBatch
+
+# (value, mean, scale) -> transformed value, for floats and tensors alike
+type Transform = Callable[[Any, float, float], Any]
+
+
+def _standardize(value: Any, mean: float, scale: float) -> Any:
+    return (value - mean) / scale
+
+
+def _unstandardize(value: Any, mean: float, scale: float) -> Any:
+    return value * scale + mean
+
+
+class NormalizerWrapper(nn.Module):
+    """Normalizes fields and config parameters of a `FlashXBatch`:
+        - fields normalized by dataset mean and std.
+        - config parameters normalized by dataset mean and std.
+        - values that are constant over a dataset only have mean subtracted.
+    This can be used as a module: `NormalizerWrapper.from_json("stats.json", module)`
+    to automatically normalize inputs and unnormalize outputs.
+    The normalization statistics are saved with the module's state, so a checkpoint
+    carries the normalization it was trained with.
+    """
+
+    def __init__(
+        self, statistics: Mapping[str, Any], module: nn.Module | None = None
+    ) -> None:
+        super().__init__()
+        self.statistics = _validated_statistics(statistics)
+        self.module = module
+
+    @classmethod
+    def from_json(
+        cls, path: str | os.PathLike[str], module: nn.Module | None = None
+    ) -> "NormalizerWrapper":
+        with open(path, encoding="utf-8") as handle:
+            return cls(json.load(handle), module)
+
+    def forward(self, batch: FlashXBatch) -> FlashXBatch:
+        if self.module is None:
+            raise RuntimeError(
+                "the NormalizerWrapper has no module to wrap; use normalize and "
+                "unnormalize directly"
+            )
+        prediction: FlashXBatch = self.module(self.normalize(batch))
+        return self.unnormalize(prediction)
+
+    def normalize(self, batch: FlashXBatch) -> FlashXBatch:
+        return self._transform(batch, _standardize)
+
+    def unnormalize(self, batch: FlashXBatch) -> FlashXBatch:
+        return self._transform(batch, _unstandardize)
+
+    def get_extra_state(self) -> dict[str, Any]:
+        return {"statistics": self.statistics}
+
+    def set_extra_state(self, state: dict[str, Any]) -> None:
+        self.statistics = _validated_statistics(state["statistics"])
+
+    def _transform(self, batch: FlashXBatch, transform: Transform) -> FlashXBatch:
+        fields = {
+            name: transform(tensor, *self._field_scale(name))
+            for name, tensor in batch.fields.items()
+        }
+        configs = [
+            _transform_config(config, self.statistics["config"], transform, "")
+            for config in batch.configs
+        ]
+        return FlashXBatch(fields, configs, batch.config_keys, batch.device)
+
+    def _field_scale(self, name: str) -> tuple[float, float]:
+        if name not in self.statistics["fields"]:
+            raise KeyError(
+                f"no statistics for field {name!r}; there are statistics for "
+                f"{sorted(self.statistics['fields'])}"
+            )
+        return _mean_and_scale(self.statistics["fields"][name])
+
+
+def _validated_statistics(statistics: Mapping[str, Any]) -> dict[str, Any]:
+    missing = sorted({"fields", "config"} - set(statistics))
+    if missing:
+        raise ValueError(f"the statistics are missing {missing}")
+    return {"fields": dict(statistics["fields"]), "config": dict(statistics["config"])}
+
+
+def _mean_and_scale(entry: Mapping[str, float]) -> tuple[float, float]:
+    std = float(entry["std"])
+    return float(entry["mean"]), std if std > 0 else 1.0
+
+
+def _transform_config(
+    values: Mapping[str, Any],
+    statistics: Mapping[str, Any],
+    transform: Transform,
+    path: str,
+) -> dict[str, Any]:
+    """values with every number transformed by the statistics at its key, walking
+    the config and its statistics side by side; a list of dicts, such as heaters,
+    shares one set of statistics."""
+    transformed: dict[str, Any] = {}
+    for name, value in values.items():
+        key = f"{path}{name}"
+        if isinstance(value, Mapping):
+            transformed[name] = _transform_config(
+                value, statistics.get(name, {}), transform, f"{key}."
+            )
+        elif _is_sequence_of_mappings(value):
+            transformed[name] = [
+                _transform_config(entry, statistics.get(name, {}), transform, f"{key}.")
+                for entry in value
+            ]
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if name not in statistics:
+                raise KeyError(f"no statistics for config parameter {key!r}")
+            transformed[name] = float(
+                transform(float(value), *_mean_and_scale(statistics[name]))
+            )
+        else:
+            transformed[name] = value
+    return transformed
+
+
+def _is_sequence_of_mappings(value: Any) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and bool(value)
+        and all(isinstance(entry, Mapping) for entry in value)
+    )
