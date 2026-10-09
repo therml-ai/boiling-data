@@ -127,7 +127,7 @@ def test_data_loader_batches_inputs_and_targets_of_the_case(
     assert batch.batch_size == 2
     for windows, frames in ((batch.input, slice(0, 2)), (batch.target, slice(1, 3))):
         stacked = windows.stack_field_cells(field_names)
-        assert stacked.shape == (2, 6, 1, 288, 96)
+        assert stacked.shape == (2, 1, 288, 96, 6)
         velfacex = _from_file(bubbleml_case, "velfacex", frames)
         velfacey = _from_file(bubbleml_case, "velfacey", frames)
         expected_channels = [
@@ -139,7 +139,7 @@ def test_data_loader_batches_inputs_and_targets_of_the_case(
             velfacey[..., 1:, :],
         ]
         for channel, expected in enumerate(expected_channels):
-            torch.testing.assert_close(stacked[:, channel, 0], expected)
+            torch.testing.assert_close(stacked[:, 0, ..., channel], expected)
     torch.testing.assert_close(
         batch.input.config_tensor(),
         torch.tensor([[0.156, 7.35]] * 2),

@@ -141,11 +141,11 @@ def _batch_with_fields() -> FlashXBatch:
     )
 
 
-def test_stacked_fields_are_channels_after_the_batch_in_the_given_order() -> None:
+def test_stacked_fields_are_the_last_dimension_in_the_given_order() -> None:
     stacked = _batch_with_fields().stacked_fields(["pressure", "temperature"])
-    assert stacked.shape == (2, 2, 3, 4, 5)
-    torch.testing.assert_close(stacked[:, 0], torch.full((2, 3, 4, 5), 2.0))
-    torch.testing.assert_close(stacked[:, 1], torch.full((2, 3, 4, 5), 1.0))
+    assert stacked.shape == (2, 3, 4, 5, 2)
+    torch.testing.assert_close(stacked[..., 0], torch.full((2, 3, 4, 5), 2.0))
+    torch.testing.assert_close(stacked[..., 1], torch.full((2, 3, 4, 5), 1.0))
 
 
 def test_stacked_fields_rejects_fields_of_different_shapes() -> None:
@@ -179,9 +179,9 @@ def _staggered_batch() -> FlashXBatch:
 def test_stack_field_cells_gives_every_cell_its_four_face_velocities() -> None:
     batch = _staggered_batch()
     stacked = batch.stack_field_cells(["temperature", "velfacex", "velfacey"])
-    assert stacked.shape == (2, 5, 3, 4, 5)
-    torch.testing.assert_close(stacked[:, 0], batch.fields["temperature"])
-    left, right, bottom, top = stacked[0, 1:, 0].unbind(0)
+    assert stacked.shape == (2, 3, 4, 5, 5)
+    torch.testing.assert_close(stacked[..., 0], batch.fields["temperature"])
+    left, right, bottom, top = stacked[0, 0, ..., 1:].unbind(-1)
     torch.testing.assert_close(left[0], torch.arange(5.0))
     torch.testing.assert_close(right[0], torch.arange(1.0, 6.0))
     torch.testing.assert_close(bottom[:, 0], torch.arange(4.0))
@@ -191,8 +191,8 @@ def test_stack_field_cells_gives_every_cell_its_four_face_velocities() -> None:
 def test_stack_field_cells_keeps_the_order_given() -> None:
     batch = _staggered_batch()
     stacked = batch.stack_field_cells(["velfacey", "temperature"])
-    assert stacked.shape == (2, 3, 3, 4, 5)
-    torch.testing.assert_close(stacked[:, 2], batch.fields["temperature"])
+    assert stacked.shape == (2, 3, 4, 5, 3)
+    torch.testing.assert_close(stacked[..., 2], batch.fields["temperature"])
 
 
 def test_stack_field_cells_rejects_a_face_field_off_the_cell_grid() -> None:

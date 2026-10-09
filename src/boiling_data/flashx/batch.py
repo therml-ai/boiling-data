@@ -6,7 +6,6 @@ import torch
 
 from boiling_data.flashx.reader import FIELD_NAMES
 
-CPU = torch.device("cpu")
 # the last axis of a field is x and the one before it y
 FACE_FIELD_AXES = {FIELD_NAMES["fv_x"]: -1, FIELD_NAMES["fv_y"]: -2}
 HEATERS_GROUP = "heaters"
@@ -39,7 +38,7 @@ class FlashXBatch:
     fields: dict[str, torch.Tensor]
     configs: list[dict[str, Any]]
     config_keys: ConfigKeys = field(default_factory=dict)
-    device: torch.device = CPU
+    device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     _config_rows: list[list[float]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -91,14 +90,14 @@ class FlashXBatch:
         ).reshape(self.batch_size, width)
 
     def stacked_fields(self, names: Sequence[str]) -> torch.Tensor:
-        """[batch_size, len(names), ...] tensor of the named fields as channels, in
-        the order given. The fields must share a shape, so cell-centered and face
-        fields cannot be mixed; see ``stack_field_cells``."""
+        """[batch_size, ..., len(names)] tensor of the named fields as channels in
+        the last dimension, in the order given. The fields must share a shape, so
+        cell-centered and face fields cannot be mixed; see ``stack_field_cells``."""
         self._require_fields(names)
         return _stack_channels([(name, self.fields[name]) for name in names])
 
     def stack_field_cells(self, names: Sequence[str]) -> torch.Tensor:
-        """[batch_size, num_channels, T, Y, X] tensor of the named fields on the
+        """[batch_size, T, Y, X, num_channels] tensor of the named fields on the
         cells. A cell-centered field is one channel; a face field is two, the low
         then the high face of every cell (left/right for velfacex, bottom/top for
         velfacey), so velfacex and velfacey give each cell its four face
@@ -154,14 +153,16 @@ type FlashXForecastSample = tuple[FlashXSample, FlashXSample]
 def flashx_collater(
     samples: Sequence[FlashXForecastSample],
     config_keys: ConfigKeys | None = None,
-    device: torch.device = CPU,
+    device: torch.device | None = None,
 ) -> FlashXForecastBatch:
     """Collate (input, target) sample pairs into one batch of inputs and one of
-    targets, both with config_keys. Usable as a DataLoader ``collate_fn``; bind
-    ``config_keys`` and ``device`` with ``functools.partial``."""
+    targets, both with config_keys, on device (the CPU by default). Usable as a
+    DataLoader ``collate_fn``; bind ``config_keys`` and ``device`` with
+    ``functools.partial``."""
     if not samples:
         raise ValueError("cannot collate an empty list of samples")
     config_keys = config_keys or {}
+    device = torch.device("cpu") if device is None else device
     return FlashXForecastBatch(
         _collate_samples(
             [input_sample for input_sample, _ in samples], config_keys, device
@@ -194,7 +195,7 @@ def _stack_channels(channels: list[tuple[str, torch.Tensor]]) -> torch.Tensor:
     shapes = {label: tuple(tensor.shape) for label, tensor in channels}
     if len(set(shapes.values())) > 1:
         raise ValueError(f"cannot stack fields of different shapes: {shapes}")
-    return torch.stack([tensor for _, tensor in channels], dim=1)
+    return torch.stack([tensor for _, tensor in channels], dim=-1)
 
 
 def require_non_empty_sequence(argument: str, values: Sequence[str]) -> None:
