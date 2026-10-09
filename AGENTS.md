@@ -7,6 +7,7 @@
 2. loading data into batches for training
 3. loading / storing simulations in a common format
 4. doing analysis of stored simulations
+5. checking for errors or oddities in stored simulations
 
 The core idea: read data of a specific format into a Python object, then write that
 object out in another format. 
@@ -21,14 +22,17 @@ The implementations for different filetypes should basically be independent.
 
 - Data should always be handled in a channels-last format. For example,
   data can be laid out like `[B, T, H, W, c]`, where `c` is a concatentation
-  of multiple fields.
+  of multiple fields. `B` is a batch size. `T`, `H`, and `W` correspond to
+  time, height, and width.
 
 ## Layout
 
 - `src/boiling_data/` — package source (src-layout, `py.typed`)
 - `src/boiling_data/flashx/` — anything specific to Flash-X simulations or their
-  parameters: the reader, symmetry, heat flux, checks, and the dataset / batching
-- `tests/` — pytest suite
+  parameters: the reader, symmetry, heat flux, checks, batching and normalization
+- `src/boiling_data/tasks/` — data loading for a learning task, one subpackage per
+  task; `tasks/forecast/` holds the forecasting dataset
+- `tests/` — pytest suite, laid out like `src/boiling_data/`
 
 Dependencies are managed with `uv`. Use `uv add <pkg>` rather than editing
 `pyproject.toml` by hand, and commit the resulting `uv.lock`.
