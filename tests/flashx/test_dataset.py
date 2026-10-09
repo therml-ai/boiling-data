@@ -7,15 +7,15 @@ from torch.utils.data import DataLoader
 
 from boiling_data.boiling_data import BoilingSimulation
 from boiling_data.flashx.batch import flashx_collater
-from boiling_data.flashx.dataset import FlashXDataset
+from boiling_data.flashx.dataset import FlashXForecastDataset
 
 FIELD_NAMES = ["temperature", "velfacex"]
 
 
 def _dataset(
     paths: list[Path], input_timesteps: int = 1, target_timesteps: int = 1
-) -> FlashXDataset:
-    return FlashXDataset(paths, FIELD_NAMES, input_timesteps, target_timesteps)
+) -> FlashXForecastDataset:
+    return FlashXForecastDataset(paths, FIELD_NAMES, input_timesteps, target_timesteps)
 
 
 def _from_file(case: BoilingSimulation, name: str, frames: slice) -> torch.Tensor:
@@ -54,7 +54,7 @@ def test_target_holds_the_frames_after_the_input(
 def test_windows_start_at_the_start_frame(
     bubbleml_path: Path, bubbleml_case: BoilingSimulation
 ) -> None:
-    dataset = FlashXDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=1)
+    dataset = FlashXForecastDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=1)
     assert len(dataset) == 1
     input_sample, _ = dataset[0]
     torch.testing.assert_close(
@@ -76,7 +76,7 @@ def test_out_of_range_index_raises(bubbleml_path: Path) -> None:
 
 
 def test_missing_field_raises(bubbleml_path: Path) -> None:
-    dataset = FlashXDataset([bubbleml_path], ["temperature", "velz"], 1, 1)
+    dataset = FlashXForecastDataset([bubbleml_path], ["temperature", "velz"], 1, 1)
     with pytest.raises(KeyError, match="velz"):
         dataset[0]
 
@@ -98,19 +98,21 @@ def test_invalid_arguments_raise(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        FlashXDataset([bubbleml_path], field_names, input_timesteps, target_timesteps)
+        FlashXForecastDataset(
+            [bubbleml_path], field_names, input_timesteps, target_timesteps
+        )
 
 
 def test_negative_start_frame_raises(bubbleml_path: Path) -> None:
     with pytest.raises(ValueError, match="start_frame"):
-        FlashXDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=-1)
+        FlashXForecastDataset([bubbleml_path], FIELD_NAMES, 1, 1, start_frame=-1)
 
 
 def test_data_loader_batches_inputs_and_targets_of_the_case(
     bubbleml_path: Path, bubbleml_case: BoilingSimulation
 ) -> None:
     field_names = ["temperature", "dfun", "velfacex", "velfacey"]
-    dataset = FlashXDataset([bubbleml_path], field_names, 1, 1)
+    dataset = FlashXForecastDataset([bubbleml_path], field_names, 1, 1)
     loader = DataLoader(
         dataset,
         batch_size=2,

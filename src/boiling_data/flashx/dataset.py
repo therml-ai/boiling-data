@@ -15,7 +15,7 @@ from boiling_data.flashx.batch import (
 )
 
 
-class FlashXDataset(Dataset[FlashXForecastSample]):
+class FlashXForecastDataset(Dataset[FlashXForecastSample]):
     """Every window of ``input_timesteps`` consecutive frames of every BubbleML file,
     paired with the ``target_timesteps`` frames that follow it, as a sliding window
     with stride one.
