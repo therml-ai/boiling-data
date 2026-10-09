@@ -239,3 +239,31 @@ def test_config_scaling_is_saved_with_the_state_dict() -> None:
 
 def test_config_scaling_defaults_to_min_max() -> None:
     assert NormalizerWrapper(STATISTICS).config_scaling == "min_max"
+
+
+def test_forward_keeps_the_input_configs_so_rollouts_can_extend() -> None:
+    # stefan = 0.072 over [0.023, 0.506] comes back from min-max scaling as
+    # 0.07200000000000001, so transforming the configs back cannot be relied on
+    statistics = copy.deepcopy(STATISTICS)
+    statistics["config"]["non_dimensional"]["stefan"] = {
+        "count": 2,
+        "mean": 0.3,
+        "std": 0.2,
+        "min": 0.023,
+        "max": 0.506,
+    }
+    config = _config(60.0, [75.0])
+    config["non_dimensional"]["stefan"] = 0.072
+    history = FlashXBatch(
+        {"temperature": torch.zeros(1, 2, 2, 2)},
+        [config],
+        {"non_dimensional": ["stefan"]},
+    )
+    wrapper = NormalizerWrapper(statistics, _Recorder(), config_scaling="min_max")
+    round_trip = wrapper.unnormalize(wrapper.normalize(history))
+    assert round_trip.configs[0]["non_dimensional"]["stefan"] != 0.072
+
+    prediction = wrapper(history)
+    assert prediction.configs == history.configs
+    extended = history.extend(prediction).tail_time_window(2)
+    assert extended.configs[0]["non_dimensional"]["stefan"] == 0.072

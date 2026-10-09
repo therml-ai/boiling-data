@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
+import torch
 from torch import nn
 
 from boiling_data.flashx.batch import FlashXBatch
@@ -63,7 +64,11 @@ class NormalizerWrapper(nn.Module):
                 "unnormalize directly"
             )
         prediction: FlashXBatch = self.module(self.normalize(batch))
-        return self.unnormalize(prediction)
+        # the input's own configs, not the normalized ones transformed back, which
+        # differ from them by rounding and would stop the prediction extending it
+        return batch.with_fields(
+            self._transform_fields(prediction.fields, _unstandardize)
+        )
 
     def normalize(self, batch: FlashXBatch) -> FlashXBatch:
         return self._transform(batch, _standardize)
@@ -79,16 +84,21 @@ class NormalizerWrapper(nn.Module):
         self.config_scaling = _validated_config_scaling(state["config_scaling"])
 
     def _transform(self, batch: FlashXBatch, transform: Transform) -> FlashXBatch:
-        fields = {
-            name: transform(tensor, *self._field_scale(name))
-            for name, tensor in batch.fields.items()
-        }
+        fields = self._transform_fields(batch.fields, transform)
         scaling = CONFIG_SCALINGS[self.config_scaling]
         configs = [
             _transform_config(config, self.statistics["config"], transform, scaling, "")
             for config in batch.configs
         ]
         return FlashXBatch(fields, configs, batch.config_keys, batch.device)
+
+    def _transform_fields(
+        self, fields: Mapping[str, torch.Tensor], transform: Transform
+    ) -> dict[str, torch.Tensor]:
+        return {
+            name: transform(tensor, *self._field_scale(name))
+            for name, tensor in fields.items()
+        }
 
     def _field_scale(self, name: str) -> tuple[float, float]:
         if name not in self.statistics["fields"]:
