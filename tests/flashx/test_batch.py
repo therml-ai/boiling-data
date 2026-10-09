@@ -15,8 +15,17 @@ def _config(wall_temp: float, stefan: float) -> dict[str, Any]:
     }
 
 
-def _batch(configs: list[dict[str, Any]]) -> FlashXBatch:
-    return FlashXBatch({"temperature": torch.zeros(len(configs), 2, 4, 3)}, configs)
+NON_DIMENSIONAL_KEYS = {"non_dimensional": ["stefan", "prandtl"]}
+
+
+def _batch(
+    configs: list[dict[str, Any]], config_keys: dict[str, list[str]] | None = None
+) -> FlashXBatch:
+    return FlashXBatch(
+        {"temperature": torch.zeros(len(configs), 2, 4, 3)},
+        configs,
+        config_keys or {},
+    )
 
 
 def test_batch_rejects_fields_whose_batch_size_differs_from_the_configs() -> None:
@@ -24,62 +33,97 @@ def test_batch_rejects_fields_whose_batch_size_differs_from_the_configs() -> Non
         FlashXBatch({"temperature": torch.zeros(3, 2, 4, 3)}, [_config(1.0, 0.5)])
 
 
-def test_config_tensor_has_one_row_per_sample_in_the_order_given() -> None:
-    batch = _batch([_config(1.0, 0.5), _config(2.0, 0.25)])
-    tensor = batch.config_tensor(["stefan", "prandtl"], dtype=torch.float64)
-    expected = torch.tensor([[0.5, 7.0], [0.25, 7.0]], dtype=torch.float64)
-    torch.testing.assert_close(tensor, expected)
+def test_config_tensor_has_one_row_per_sample_in_the_key_order() -> None:
+    batch = _batch([_config(1.0, 0.5), _config(2.0, 0.25)], NON_DIMENSIONAL_KEYS)
+    tensor = batch.config_tensor()
+    assert tensor.dtype == torch.float32
+    torch.testing.assert_close(tensor, torch.tensor([[0.5, 7.0], [0.25, 7.0]]))
+
+
+def test_heater_parameters_follow_the_groups_in_order() -> None:
+    keys = {"non_dimensional": ["stefan"], "heaters": ["wallTemp"]}
+    batch = _batch([_config(1.0, 0.5), _config(2.0, 0.25)], keys)
+    torch.testing.assert_close(
+        batch.config_tensor(), torch.tensor([[0.5, 1.0], [0.25, 2.0]])
+    )
+
+
+def test_config_keys_can_read_any_numeric_group() -> None:
+    keys = {"discretization": ["num_blocks_x"], "non_dimensional": ["stefan"]}
+    batch = _batch([_config(1.0, 0.5)], keys)
+    torch.testing.assert_close(batch.config_tensor(), torch.tensor([[6.0, 0.5]]))
 
 
 @pytest.mark.parametrize("names", [[], "stefan"])
-def test_config_tensor_requires_a_non_empty_sequence_of_names(names: Any) -> None:
+def test_config_keys_need_a_non_empty_sequence_of_names(names: Any) -> None:
     with pytest.raises(ValueError, match="non-empty sequence"):
-        _batch([_config(1.0, 0.5)]).config_tensor(names)
+        _batch([_config(1.0, 0.5)], {"non_dimensional": names})
 
 
-@pytest.mark.parametrize("name", ["reynolds", "num_blocks_x"])
-def test_config_tensor_only_reads_non_dimensional_parameters(name: str) -> None:
-    with pytest.raises(KeyError, match="no non-dimensional parameter"):
-        _batch([_config(1.0, 0.5)]).config_tensor([name])
+def test_config_keys_reject_an_unknown_group() -> None:
+    with pytest.raises(ValueError, match="unknown groups"):
+        _batch([_config(1.0, 0.5)], {"fluid": ["stefan"]})
 
 
-def test_heater_parameters_follow_the_non_dimensional_ones() -> None:
-    batch = _batch([_config(1.0, 0.5), _config(2.0, 0.25)])
-    tensor = batch.config_tensor(["stefan"], heater=["wallTemp"])
-    torch.testing.assert_close(tensor, torch.tensor([[0.5, 1.0], [0.25, 2.0]]))
+def test_missing_parameter_fails_when_the_batch_is_built() -> None:
+    with pytest.raises(KeyError, match=r"\{0: \['non_dimensional.reynolds'\]\}"):
+        _batch([_config(1.0, 0.5)], {"non_dimensional": ["reynolds"]})
+    with pytest.raises(KeyError, match=r"\{0: \['heaters.advAngle'\]\}"):
+        _batch([_config(1.0, 0.5)], {"heaters": ["advAngle"]})
+
+
+def test_every_sample_is_checked_and_every_gap_reported() -> None:
+    gappy = _config(2.0, 0.25)
+    del gappy["non_dimensional"]["prandtl"]
+    del gappy["heaters"][0]["wallTemp"]
+    keys = {"non_dimensional": ["stefan", "prandtl"], "heaters": ["wallTemp"]}
+    with pytest.raises(KeyError) as error:
+        _batch([_config(1.0, 0.5), gappy], keys)
+    assert "{1: ['non_dimensional.prandtl', 'heaters.wallTemp']}" in str(error.value)
 
 
 def test_heater_parameters_need_exactly_one_heater() -> None:
     config = _config(1.0, 0.5)
     config["heaters"].append(dict(config["heaters"][0]))
     with pytest.raises(ValueError, match="one heater, not 2"):
-        _batch([config]).config_tensor(["stefan"], heater=["wallTemp"])
+        _batch([config], {"heaters": ["wallTemp"]})
 
 
-def test_missing_heater_parameter_raises() -> None:
-    with pytest.raises(KeyError, match="no heater parameter 'advAngle'"):
-        _batch([_config(1.0, 0.5)]).config_tensor(["stefan"], heater=["advAngle"])
+def test_config_tensor_needs_config_keys() -> None:
+    with pytest.raises(ValueError, match="no config_keys"):
+        _batch([_config(1.0, 0.5)]).config_tensor()
 
 
 def test_config_tensor_from_simulation_parameters(
     bubbleml_case: BoilingSimulation,
 ) -> None:
-    batch = _batch([bubbleml_case.parameters.to_dict()])
-    tensor = batch.config_tensor(
-        ["stefan", "prandtl"], heater=["wall_temp_fraction", "xMax"]
+    keys = {
+        "non_dimensional": ["stefan", "prandtl"],
+        "heaters": ["wall_temp_fraction", "xMax"],
+    }
+    batch = _batch([bubbleml_case.parameters.to_dict()], keys)
+    torch.testing.assert_close(
+        batch.config_tensor(), torch.tensor([[0.156, 7.35, 1.0, 2.0]])
     )
-    torch.testing.assert_close(tensor, torch.tensor([[0.156, 7.35, 1.0, 2.0]]))
 
 
 def test_fields_and_config_tensor_are_on_the_batch_device() -> None:
     batch = FlashXBatch(
         {"temperature": torch.zeros(1, 2, 4, 3)},
         [_config(1.0, 0.5)],
+        NON_DIMENSIONAL_KEYS,
         device=torch.device("meta"),
     )
     assert batch.device == torch.device("meta")
     assert batch.fields["temperature"].device == batch.device
-    assert batch.config_tensor(["stefan"]).device == batch.device
+    assert batch.config_tensor().device == batch.device
+
+
+def test_config_keys_survive_moving_the_batch() -> None:
+    batch = _batch([_config(1.0, 0.5)], NON_DIMENSIONAL_KEYS)
+    moved = batch.to(torch.device("meta"))
+    assert moved.config_keys == NON_DIMENSIONAL_KEYS
+    assert moved.config_tensor().shape == (1, 2)
 
 
 def test_device_defaults_to_cpu() -> None:
@@ -236,3 +280,10 @@ def test_collater_rejects_samples_with_different_fields() -> None:
 def test_collater_rejects_an_empty_list() -> None:
     with pytest.raises(ValueError, match="empty"):
         flashx_collater([])
+
+
+def test_collater_gives_input_and_target_the_config_keys() -> None:
+    batch = flashx_collater([_pair(1.0), _pair(2.0)], config_keys=NON_DIMENSIONAL_KEYS)
+    for windows in (batch.input, batch.target):
+        assert windows.config_keys == NON_DIMENSIONAL_KEYS
+        assert windows.config_tensor().shape == (2, 2)

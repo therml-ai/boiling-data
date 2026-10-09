@@ -115,7 +115,11 @@ def test_data_loader_batches_inputs_and_targets_of_the_case(
         dataset,
         batch_size=2,
         shuffle=False,
-        collate_fn=partial(flashx_collater, device=torch.device("cpu")),
+        collate_fn=partial(
+            flashx_collater,
+            config_keys={"non_dimensional": ["stefan", "prandtl"]},
+            device=torch.device("cpu"),
+        ),
     )
 
     (batch,) = list(loader)
@@ -137,7 +141,7 @@ def test_data_loader_batches_inputs_and_targets_of_the_case(
         for channel, expected in enumerate(expected_channels):
             torch.testing.assert_close(stacked[:, channel, 0], expected)
     torch.testing.assert_close(
-        batch.input.config_tensor(["stefan", "prandtl"]),
+        batch.input.config_tensor(),
         torch.tensor([[0.156, 7.35]] * 2),
     )
 
