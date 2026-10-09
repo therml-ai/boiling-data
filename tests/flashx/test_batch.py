@@ -1,3 +1,5 @@
+import dataclasses
+import pickle
 from typing import Any
 
 import pytest
@@ -127,7 +129,7 @@ def test_fields_and_config_tensor_are_on_the_batch_device() -> None:
 def test_config_keys_survive_moving_the_batch() -> None:
     batch = _batch([_config(1.0, 0.5)], NON_DIMENSIONAL_KEYS)
     moved = batch.to(torch.device("meta"))
-    assert moved.config_keys == NON_DIMENSIONAL_KEYS
+    assert moved.config_keys == {"non_dimensional": ("stefan", "prandtl")}
     assert moved.config_tensor().shape == (1, 2)
 
 
@@ -290,7 +292,7 @@ def test_collater_rejects_an_empty_list() -> None:
 def test_collater_gives_input_and_target_the_config_keys() -> None:
     batch = flashx_collater([_pair(1.0), _pair(2.0)], config_keys=NON_DIMENSIONAL_KEYS)
     for windows in (batch.input, batch.target):
-        assert windows.config_keys == NON_DIMENSIONAL_KEYS
+        assert windows.config_keys == {"non_dimensional": ("stefan", "prandtl")}
         assert windows.config_tensor().shape == (2, 2)
 
 
@@ -445,3 +447,30 @@ def test_the_two_predictions_of_an_interior_face_are_averaged() -> None:
 def test_unstack_needs_the_channels_the_names_take() -> None:
     with pytest.raises(ValueError, match="take 3 channels, but the tensor has 2"):
         unstack_field_cells(torch.zeros(1, 1, 4, 5, 2), ["temperature", "velfacex"])
+
+
+def test_configs_cannot_be_changed_after_the_batch_is_built() -> None:
+    config = _config(1.0, 0.5)
+    batch = _batch([config], NON_DIMENSIONAL_KEYS)
+    with pytest.raises(TypeError, match="cannot be changed"):
+        batch.configs[0]["non_dimensional"]["stefan"] = 9.0
+    with pytest.raises(AttributeError):
+        batch.configs[0]["heaters"][0]["nuc_sites_x"].append(2.0)
+    # the batch holds its own frozen copy, so the dict it was built from is unaffected
+    config["non_dimensional"]["stefan"] = 9.0
+    torch.testing.assert_close(batch.config_tensor(), torch.tensor([[0.5, 7.0]]))
+
+
+def test_batch_attributes_cannot_be_reassigned() -> None:
+    batch = _batch([_config(1.0, 0.5)], NON_DIMENSIONAL_KEYS)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        batch.configs = []  # type: ignore[misc]
+    with pytest.raises(TypeError, match="cannot be changed"):
+        batch.config_keys["heaters"] = ["wallTemp"]  # type: ignore[index]
+
+
+def test_batches_survive_pickling_for_data_loader_workers() -> None:
+    batch = _batch([_config(1.0, 0.5)], NON_DIMENSIONAL_KEYS)
+    restored = pickle.loads(pickle.dumps(batch))
+    assert restored.configs == batch.configs
+    torch.testing.assert_close(restored.config_tensor(), batch.config_tensor())

@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from boiling_data.flashx.reader import FIELD_NAMES
+from boiling_data.frozen import freeze
 
 # the last axis of a field is x and the one before it y
 FACE_FIELD_AXES = {FIELD_NAMES["fv_x"]: -1, FIELD_NAMES["fv_y"]: -2}
@@ -23,12 +24,15 @@ class FlashXSample:
     config: dict[str, Any]
 
 
-@dataclass
+@dataclass(frozen=True)
 class FlashXBatch:
-    """A batch of Flash-X samples.
+    """A batch of Flash-X samples. Nothing in it can be changed once it is built,
+    since the config tensor rows and parameters are read from the configs then;
+    with_fields and the time window methods build new batches instead.
 
     fields: keyed by field name, each a tensor whose leading dimension is the batch.
-    configs: the raw config dict of every sample in the batch, in batch order.
+    configs: the raw config dict of every sample in the batch, in batch order,
+        frozen: its dicts become FrozenDicts and its lists tuples.
     config_keys: the parameters the config tensor holds, by config group, e.g.
         ``{"non_dimensional": ["stefan"], "heaters": ["wall_temp_fraction"]}``;
         its columns follow the groups and then the names in the order given.
@@ -36,7 +40,7 @@ class FlashXBatch:
     """
 
     fields: dict[str, torch.Tensor]
-    configs: list[dict[str, Any]]
+    configs: Sequence[Mapping[str, Any]]
     config_keys: ConfigKeys = field(default_factory=dict)
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     _config_rows: list[list[float]] = field(init=False, repr=False)
@@ -45,9 +49,10 @@ class FlashXBatch:
     )
 
     def __post_init__(self) -> None:
-        self.fields = {
-            name: tensor.to(self.device) for name, tensor in self.fields.items()
-        }
+        # a frozen dataclass sets its own attributes through object.__setattr__
+        fields = {name: tensor.to(self.device) for name, tensor in self.fields.items()}
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "configs", freeze(self.configs))
         for name, tensor in self.fields.items():
             if tensor.ndim < 2:
                 raise ValueError(
@@ -64,11 +69,11 @@ class FlashXBatch:
             raise ValueError(
                 f"the fields do not share one number of timesteps: {lengths}"
             )
-        self.config_keys = _validated_config_keys(self.config_keys)
+        config_keys = freeze(_validated_config_keys(self.config_keys))
+        object.__setattr__(self, "config_keys", config_keys)
         _check_configs_have_keys(self.configs, self.config_keys)
-        self._config_rows = [
-            _config_row(config, self.config_keys) for config in self.configs
-        ]
+        rows = [_config_row(config, self.config_keys) for config in self.configs]
+        object.__setattr__(self, "_config_rows", rows)
 
     @property
     def batch_size(self) -> int:
@@ -345,7 +350,7 @@ def _validated_config_keys(config_keys: ConfigKeys) -> dict[str, list[str]]:
 
 
 def _check_configs_have_keys(
-    configs: Sequence[dict[str, Any]], config_keys: ConfigKeys
+    configs: Sequence[Mapping[str, Any]], config_keys: ConfigKeys
 ) -> None:
     """Every config holds every key, so the batch fails when it is built, naming
     all that is missing from every sample rather than the first gap found."""
@@ -370,7 +375,7 @@ def _check_configs_have_keys(
         raise KeyError(f"configs are missing config keys, by sample: {missing}")
 
 
-def _config_row(config: dict[str, Any], config_keys: ConfigKeys) -> list[float]:
+def _config_row(config: Mapping[str, Any], config_keys: ConfigKeys) -> list[float]:
     row = []
     for group, names in config_keys.items():
         if group == HEATERS_GROUP:
@@ -381,17 +386,17 @@ def _config_row(config: dict[str, Any], config_keys: ConfigKeys) -> list[float]:
     return row
 
 
-def _only_heater(config: dict[str, Any]) -> dict[str, Any]:
+def _only_heater(config: Mapping[str, Any]) -> Mapping[str, Any]:
     heaters = config.get(HEATERS_GROUP, [])
     if len(heaters) != 1:
         raise ValueError(
             f"heater parameters need a config with one heater, not {len(heaters)}"
         )
-    heater: dict[str, Any] = heaters[0]
+    heater: Mapping[str, Any] = heaters[0]
     return heater
 
 
-def _parameter(parameters: dict[str, Any], name: str, kind: str) -> float:
+def _parameter(parameters: Mapping[str, Any], name: str, kind: str) -> float:
     if name not in parameters:
         raise KeyError(
             f"config has no {kind} parameter {name!r}; it has {sorted(parameters)}"
