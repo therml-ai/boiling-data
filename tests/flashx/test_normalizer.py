@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ def _entry(mean: float, std: float) -> dict[str, float]:
     return {"count": 2, "mean": mean, "std": std, "min": mean - std, "max": mean + std}
 
 
-STATISTICS = {
+STATISTICS: dict[str, Any] = {
     "fields": {"temperature": _entry(1.0, 2.0)},
     "config": {
         "physical": {"bulk_temp": _entry(50.0, 10.0)},
@@ -52,7 +53,9 @@ def test_fields_are_standardized_by_their_own_statistics() -> None:
 
 
 def test_config_values_are_standardized_at_the_same_group_and_key() -> None:
-    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    normalized = NormalizerWrapper(STATISTICS, config_scaling="standard").normalize(
+        _batch()
+    )
     config = normalized.configs[0]
     assert config["physical"]["bulk_temp"] == pytest.approx(1.0)
     assert config["non_dimensional"]["stefan"] == pytest.approx(1.0)
@@ -61,7 +64,9 @@ def test_config_values_are_standardized_at_the_same_group_and_key() -> None:
 
 
 def test_normalized_batches_give_normalized_conditioning_and_parameters() -> None:
-    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    normalized = NormalizerWrapper(STATISTICS, config_scaling="standard").normalize(
+        _batch()
+    )
     torch.testing.assert_close(
         normalized.config_tensor(), torch.tensor([[1.0, 1.0], [1.0, -1.0]])
     )
@@ -78,12 +83,14 @@ def test_values_without_a_numeric_meaning_pass_through() -> None:
 
 
 def test_a_constant_value_only_has_its_mean_subtracted() -> None:
-    normalized = NormalizerWrapper(STATISTICS).normalize(_batch())
+    normalized = NormalizerWrapper(STATISTICS, config_scaling="standard").normalize(
+        _batch()
+    )
     assert normalized.configs[0]["non_dimensional"]["gravy"] == 0.0
 
 
 def test_unnormalize_inverts_normalize() -> None:
-    normalizer = NormalizerWrapper(STATISTICS)
+    normalizer = NormalizerWrapper(STATISTICS, config_scaling="standard")
     batch = _batch()
     restored = normalizer.unnormalize(normalizer.normalize(batch))
     torch.testing.assert_close(
@@ -167,3 +174,74 @@ def test_statistics_file_from_a_dataset_normalizes_its_batches(
         normalized.fields["temperature"], torch.full((1, 1, 2, 2), -mean / std)
     )
     assert normalized.configs[0]["non_dimensional"]["stefan"] == 0.0
+
+
+def _min_max_statistics() -> dict[str, Any]:
+    statistics = copy.deepcopy(STATISTICS)
+    statistics["config"]["physical"]["bulk_temp"] = {
+        "count": 3,
+        "mean": 50.0,
+        "std": 10.0,
+        "min": 40.0,
+        "max": 80.0,
+    }
+    return statistics
+
+
+def test_min_max_scaling_maps_the_config_range_to_minus_one_one() -> None:
+    normalizer = NormalizerWrapper(_min_max_statistics(), config_scaling="min_max")
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(3, 1, 2, 2)},
+        [_config(temp, [70.0]) for temp in (40.0, 60.0, 80.0)],
+    )
+    normalized = normalizer.normalize(batch)
+    torch.testing.assert_close(
+        normalized.parameter("physical", "bulk_temp"), torch.tensor([-1.0, 0.0, 1.0])
+    )
+
+
+def test_min_max_scaling_leaves_fields_standardized() -> None:
+    normalizer = NormalizerWrapper(_min_max_statistics(), config_scaling="min_max")
+    normalized = normalizer.normalize(_batch(temperature=5.0))
+    torch.testing.assert_close(
+        normalized.fields["temperature"], torch.full((2, 3, 4, 5), 2.0)
+    )
+
+
+def test_min_max_scaling_maps_a_constant_value_to_zero() -> None:
+    normalizer = NormalizerWrapper(STATISTICS, config_scaling="min_max")
+    normalized = normalizer.normalize(_batch())
+    assert normalized.configs[0]["non_dimensional"]["gravy"] == 0.0
+
+
+def test_min_max_scaling_round_trips() -> None:
+    normalizer = NormalizerWrapper(_min_max_statistics(), config_scaling="min_max")
+    batch = _batch()
+    restored = normalizer.unnormalize(normalizer.normalize(batch))
+    torch.testing.assert_close(
+        restored.parameter("physical", "bulk_temp"),
+        batch.parameter("physical", "bulk_temp"),
+    )
+    torch.testing.assert_close(restored.config_tensor(), batch.config_tensor())
+
+
+def test_unknown_config_scaling_is_rejected() -> None:
+    with pytest.raises(ValueError, match="config_scaling must be one of"):
+        NormalizerWrapper(STATISTICS, config_scaling="robust")  # type: ignore[arg-type]
+
+
+def test_config_scaling_is_saved_with_the_state_dict() -> None:
+    state = NormalizerWrapper(STATISTICS, config_scaling="standard").state_dict()
+    restored = NormalizerWrapper(STATISTICS)
+    restored.load_state_dict(state)
+    assert restored.config_scaling == "standard"
+
+
+def test_config_scaling_defaults_to_min_max() -> None:
+    assert NormalizerWrapper(STATISTICS).config_scaling == "min_max"
+
+
+def test_checkpoints_from_before_config_scaling_load_as_standard() -> None:
+    restored = NormalizerWrapper(STATISTICS)
+    restored.set_extra_state({"statistics": STATISTICS})
+    assert restored.config_scaling == "standard"
