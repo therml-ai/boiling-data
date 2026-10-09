@@ -17,11 +17,6 @@ type Window = tuple[dict[str, torch.Tensor], dict[str, Any]]
 
 
 class _FlashXForecastWindows(Dataset[FlashXForecastSample]):
-    """Every window of ``input_timesteps`` consecutive frames of every BubbleML file,
-    paired with the ``target_timesteps`` frames that follow it, as a sliding window
-    whose starts are ``stride`` frames apart. Subclasses decide where a window's
-    frames come from."""
-
     def __init__(
         self,
         paths: Sequence[str | os.PathLike[str]],
@@ -30,19 +25,23 @@ class _FlashXForecastWindows(Dataset[FlashXForecastSample]):
         target_timesteps: int,
         start_frame: int = 0,
         stride: int = 1,
+        unroll_steps: int = 1,
         dtype: torch.dtype = torch.float32,
     ) -> None:
         """start_frame: windows begin at or after this frame of every file, e.g. to
         skip the start-up transient of each run.
-        stride: frames between the starts of consecutive windows of a file; above
-        one, neighbouring samples share fewer frames and so are less correlated.
-        The frames within a window stay consecutive."""
+        stride: frames between the starts of consecutive windows. `stride > 1`
+        can be used to train on less correlated time windows.
+        unroll_steps: target windows a model is unrolled through to reach the
+        target, for push-forward training. The target holds every frame of them,
+        so its last window is ``target.tail_time_window(target_timesteps)``."""
         if not paths:
             raise ValueError("paths must name at least one BubbleML file")
         require_non_empty_sequence("field_names", field_names)
         for argument, timesteps in (
             ("input_timesteps", input_timesteps),
             ("target_timesteps", target_timesteps),
+            ("unroll_steps", unroll_steps),
         ):
             if timesteps < 1:
                 raise ValueError(f"{argument} must be positive, not {timesteps}")
@@ -56,6 +55,7 @@ class _FlashXForecastWindows(Dataset[FlashXForecastSample]):
         self.target_timesteps = target_timesteps
         self.start_frame = start_frame
         self.stride = stride
+        self.unroll_steps = unroll_steps
         self.dtype = dtype
         self._windows_per_file = [
             self._num_windows(read_bubbleml_num_timesteps(path)) for path in self.paths
@@ -69,7 +69,8 @@ class _FlashXForecastWindows(Dataset[FlashXForecastSample]):
 
     @property
     def _window(self) -> int:
-        return self.input_timesteps + self.target_timesteps
+        """Frames from the first input frame to the last target frame."""
+        return self.input_timesteps + self.unroll_steps * self.target_timesteps
 
     def _num_windows(self, num_timesteps: int) -> int:
         spare_frames = num_timesteps - self.start_frame - self._window
@@ -119,11 +120,8 @@ class FlashXForecastDataset(_FlashXForecastWindows):
 
 
 class FlashXInMemoryForecastDataset(_FlashXForecastWindows):
-    """The same windows as FlashXForecastDataset, from every file loaded into CPU
-    memory once, when the dataset is built: each file's fields from start_frame on,
-    as dtype, and its config, frozen since every sample of the file shares it. Files
-    too short for a window are not loaded. Items are views of the loaded tensors,
-    so indexing copies nothing."""
+    """The same windows as FlashXForecastDataset, but every file is loaded into CPU
+    memory once, when the dataset is built."""
 
     def __init__(
         self,
@@ -133,6 +131,7 @@ class FlashXInMemoryForecastDataset(_FlashXForecastWindows):
         target_timesteps: int,
         start_frame: int = 0,
         stride: int = 1,
+        unroll_steps: int = 1,
         dtype: torch.dtype = torch.float32,
     ) -> None:
         super().__init__(
@@ -142,6 +141,7 @@ class FlashXInMemoryForecastDataset(_FlashXForecastWindows):
             target_timesteps,
             start_frame,
             stride,
+            unroll_steps,
             dtype,
         )
         self._loaded: dict[int, Window] = {

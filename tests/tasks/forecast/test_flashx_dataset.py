@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 
 from boiling_data.boiling_data import BoilingSimulation, Field, SimulationParameters
 from boiling_data.bubbleml import read_bubbleml
+from boiling_data.flashx.batch import FlashXBatch, FlashXSample
 from boiling_data.frozen import freeze
 from boiling_data.tasks.forecast import flashx_dataset
 from boiling_data.tasks.forecast.flashx_batch import flashx_collater
@@ -360,3 +361,92 @@ def test_in_memory_dataset_strides_like_the_disk_dataset(
 def test_stride_must_be_positive(ten_frames: Path, stride: int) -> None:
     with pytest.raises(ValueError, match="stride must be positive"):
         FlashXForecastDataset([ten_frames], ["temperature"], 1, 1, stride=stride)
+
+
+def _frame_indices(sample: FlashXSample) -> list[float]:
+    return sample.fields["temperature"][:, 0, 0].tolist()
+
+
+@pytest.mark.parametrize(
+    ("input_timesteps", "target_timesteps", "unroll_steps", "history", "target"),
+    [
+        (2, 1, 1, [0, 1], [2]),
+        (2, 1, 2, [0, 1], [2, 3]),
+        (2, 2, 2, [0, 1], [2, 3, 4, 5]),
+        (2, 2, 3, [0, 1], [2, 3, 4, 5, 6, 7]),
+    ],
+)
+def test_target_holds_every_frame_of_the_unrolled_windows(
+    ten_frames: Path,
+    input_timesteps: int,
+    target_timesteps: int,
+    unroll_steps: int,
+    history: list[float],
+    target: list[float],
+) -> None:
+    dataset = FlashXForecastDataset(
+        [ten_frames],
+        ["temperature"],
+        input_timesteps,
+        target_timesteps,
+        unroll_steps=unroll_steps,
+    )
+    input_sample, target_sample = dataset[0]
+    assert _frame_indices(input_sample) == history
+    assert _frame_indices(target_sample) == target
+
+
+def test_unrolled_windows_need_room_for_every_step(ten_frames: Path) -> None:
+    # 2 input frames and 3 unrolled windows of 2 frames span 8 of the 10 frames
+    dataset = FlashXForecastDataset([ten_frames], ["temperature"], 2, 2, unroll_steps=3)
+    assert len(dataset) == 3
+    strided = FlashXForecastDataset(
+        [ten_frames], ["temperature"], 2, 2, stride=2, unroll_steps=3
+    )
+    assert len(strided) == 2
+    assert _frame_indices(strided[1][1]) == [4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+
+
+@pytest.mark.parametrize("unroll_steps", [1, 2, 3])
+def test_in_memory_dataset_unrolls_like_the_disk_dataset(
+    ten_frames: Path, unroll_steps: int
+) -> None:
+    arguments = ([ten_frames], ["temperature"], 2, 1)
+    on_disk = FlashXForecastDataset(*arguments, unroll_steps=unroll_steps)
+    in_memory = FlashXInMemoryForecastDataset(*arguments, unroll_steps=unroll_steps)
+    assert len(in_memory) == len(on_disk)
+    for index in range(len(on_disk)):
+        assert _frame_indices(in_memory[index][1]) == _frame_indices(on_disk[index][1])
+
+
+@pytest.mark.parametrize("unroll_steps", [0, -1])
+def test_unroll_steps_must_be_positive(ten_frames: Path, unroll_steps: int) -> None:
+    with pytest.raises(ValueError, match="unroll_steps must be positive"):
+        FlashXForecastDataset(
+            [ten_frames], ["temperature"], 1, 1, unroll_steps=unroll_steps
+        )
+
+
+def test_a_push_forward_step_lines_up_with_the_target(ten_frames: Path) -> None:
+    """Unrolling a stand-in model that predicts the next frame by adding one
+    reaches the target's last window; without unrolling, its first window."""
+    dataset = FlashXForecastDataset([ten_frames], ["temperature"], 2, 1, unroll_steps=3)
+    batch = flashx_collater([dataset[0], dataset[4]])
+    history, target = batch.input, batch.target
+    assert target.num_timesteps == dataset.unroll_steps * dataset.target_timesteps
+
+    def predict(window: FlashXBatch) -> FlashXBatch:
+        last_frame = window.tail_time_window(1).fields["temperature"]
+        return window.with_fields({"temperature": last_frame + 1.0})
+
+    torch.testing.assert_close(
+        predict(history).fields["temperature"],
+        target.head_time_window(1).fields["temperature"],
+    )
+    for _ in range(dataset.unroll_steps):
+        prediction = predict(history)
+        history = history.extend(prediction).tail_time_window(2)
+    torch.testing.assert_close(
+        prediction.fields["temperature"],
+        target.tail_time_window(1).fields["temperature"],
+    )
