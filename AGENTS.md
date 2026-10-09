@@ -17,6 +17,12 @@ into
 
 The implementations for different filetypes should basically be independent.
 
+## Data
+
+- Data should always be handled in a channels-last format. For example,
+  data can be laid out like `[B, T, H, W, c]`, where `c` is a concatentation
+  of multiple fields.
+
 ## Layout
 
 - `src/boiling_data/` — package source (src-layout, `py.typed`)
