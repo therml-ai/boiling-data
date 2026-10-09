@@ -1,13 +1,20 @@
 from functools import partial
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from boiling_data.boiling_data import BoilingSimulation
+from boiling_data.boiling_data import BoilingSimulation, Field, SimulationParameters
+from boiling_data.bubbleml import read_bubbleml
+from boiling_data.frozen import freeze
+from boiling_data.tasks.forecast import flashx_dataset
 from boiling_data.tasks.forecast.flashx_batch import flashx_collater
-from boiling_data.tasks.forecast.flashx_dataset import FlashXForecastDataset
+from boiling_data.tasks.forecast.flashx_dataset import (
+    FlashXForecastDataset,
+    FlashXInMemoryForecastDataset,
+)
 
 FIELD_NAMES = ["temperature", "velfacex"]
 
@@ -164,3 +171,192 @@ def test_data_loader_pins_batches_for_a_non_blocking_copy(bubbleml_path: Path) -
     on_gpu = batch.to(torch.device("cuda"), non_blocking=True)
     assert on_gpu.input.fields["temperature"].is_cuda
     assert on_gpu.target.fields["temperature"].is_cuda
+
+
+@pytest.fixture
+def two_lengths(bubbleml_path: Path, tmp_path: Path) -> list[Path]:
+    """The three-frame test case and a two-frame copy of it."""
+    short = read_bubbleml(bubbleml_path, frames=slice(0, 2))
+    return [bubbleml_path, short.to_bubbleml(tmp_path / "short.hdf5")]
+
+
+@pytest.mark.parametrize(
+    ("input_timesteps", "target_timesteps", "start_frame"),
+    [(1, 1, 0), (2, 1, 0), (1, 1, 1), (1, 2, 0)],
+)
+def test_in_memory_items_match_the_items_read_from_disk(
+    two_lengths: list[Path],
+    input_timesteps: int,
+    target_timesteps: int,
+    start_frame: int,
+) -> None:
+    arguments = (
+        two_lengths,
+        FIELD_NAMES,
+        input_timesteps,
+        target_timesteps,
+        start_frame,
+    )
+    on_disk = FlashXForecastDataset(*arguments)
+    in_memory = FlashXInMemoryForecastDataset(*arguments)
+    assert len(in_memory) == len(on_disk)
+    for index in range(len(on_disk)):
+        for expected, actual in zip(on_disk[index], in_memory[index], strict=True):
+            # the in-memory configs are frozen: their lists are tuples
+            assert actual.config == freeze(expected.config)
+            for name in FIELD_NAMES:
+                torch.testing.assert_close(actual.fields[name], expected.fields[name])
+
+
+def _count_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    reads: list[Path] = []
+
+    def counting_read(path: Path, *args: object, **kwargs: object) -> BoilingSimulation:
+        reads.append(Path(path))
+        return read_bubbleml(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(flashx_dataset, "read_bubbleml", counting_read)
+    return reads
+
+
+def test_files_are_read_once_when_the_dataset_is_built(
+    two_lengths: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = _count_reads(monkeypatch)
+    dataset = FlashXInMemoryForecastDataset(two_lengths, FIELD_NAMES, 1, 1)
+    assert reads == two_lengths
+    for index in range(len(dataset)):
+        dataset[index]
+    assert reads == two_lengths
+
+
+def test_files_too_short_for_a_window_are_not_loaded(
+    two_lengths: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = _count_reads(monkeypatch)
+    dataset = FlashXInMemoryForecastDataset(two_lengths, FIELD_NAMES, 2, 1)
+    assert reads == two_lengths[:1]
+    assert len(dataset) == 1
+
+
+def test_in_memory_configs_cannot_be_changed(bubbleml_path: Path) -> None:
+    input_sample, _ = FlashXInMemoryForecastDataset([bubbleml_path], FIELD_NAMES, 1, 1)[
+        0
+    ]
+    with pytest.raises(TypeError, match="cannot be changed"):
+        input_sample.config["physical"]["bulk_temp"] = 0.0
+
+
+def test_in_memory_fields_have_the_requested_dtype(bubbleml_path: Path) -> None:
+    dataset = FlashXInMemoryForecastDataset(
+        [bubbleml_path], FIELD_NAMES, 1, 1, dtype=torch.float64
+    )
+    input_sample, target_sample = dataset[0]
+    assert input_sample.fields["temperature"].dtype == torch.float64
+    assert target_sample.fields["velfacex"].dtype == torch.float64
+
+
+def test_in_memory_dataset_batches_like_the_disk_dataset(bubbleml_path: Path) -> None:
+    config_keys = {"non_dimensional": ["stefan"]}
+    loaders = [
+        DataLoader(
+            dataset_class([bubbleml_path], FIELD_NAMES, 1, 1),
+            batch_size=2,
+            collate_fn=partial(flashx_collater, config_keys=config_keys),
+        )
+        for dataset_class in (FlashXForecastDataset, FlashXInMemoryForecastDataset)
+    ]
+    on_disk, in_memory = (next(iter(loader)) for loader in loaders)
+    torch.testing.assert_close(
+        in_memory.input.fields["temperature"], on_disk.input.fields["temperature"]
+    )
+    torch.testing.assert_close(
+        in_memory.target.config_tensor(), on_disk.target.config_tensor()
+    )
+
+
+@pytest.fixture
+def ten_frames(tmp_path: Path) -> Path:
+    """Ten frames whose every value is the frame index."""
+    frames = np.arange(10, dtype=np.float64)[:, None, None] * np.ones((1, 2, 2))
+    centers, faces = np.array([0.25, 0.75]), np.array([0.0, 0.5, 1.0])
+    simulation = BoilingSimulation(
+        fields={"temperature": Field(frames, grid_x=centers, grid_y=centers)},
+        parameters=SimulationParameters(
+            discretization={
+                "num_blocks_x": 1,
+                "num_blocks_y": 1,
+                "nx_block": 2,
+                "ny_block": 2,
+                "x_min": faces[0],
+                "x_max": faces[-1],
+                "y_min": faces[0],
+                "y_max": faces[-1],
+            }
+        ),
+        time=np.arange(10, dtype=np.float64),
+    )
+    return simulation.to_bubbleml(tmp_path / "ten-frames.hdf5")
+
+
+def _window_starts(dataset: FlashXForecastDataset) -> list[float]:
+    return [
+        float(dataset[index][0].fields["temperature"][0, 0, 0])
+        for index in range(len(dataset))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stride", "start_frame", "expected_starts"),
+    [
+        (1, 0, [0, 1, 2, 3, 4, 5, 6, 7, 8]),
+        (3, 0, [0, 3, 6]),
+        (3, 1, [1, 4, 7]),
+        (8, 0, [0, 8]),
+        (9, 0, [0]),
+    ],
+)
+def test_windows_start_stride_frames_apart(
+    ten_frames: Path, stride: int, start_frame: int, expected_starts: list[int]
+) -> None:
+    dataset = FlashXForecastDataset(
+        [ten_frames], ["temperature"], 1, 1, start_frame=start_frame, stride=stride
+    )
+    assert _window_starts(dataset) == expected_starts
+
+
+def test_frames_within_a_window_stay_consecutive(ten_frames: Path) -> None:
+    history, future = FlashXForecastDataset(
+        [ten_frames], ["temperature"], 3, 2, stride=4
+    )[1]
+    assert history.fields["temperature"][:, 0, 0].tolist() == [4.0, 5.0, 6.0]
+    assert future.fields["temperature"][:, 0, 0].tolist() == [7.0, 8.0]
+
+
+def test_stride_counts_windows_across_files(ten_frames: Path) -> None:
+    dataset = FlashXForecastDataset(
+        [ten_frames, ten_frames], ["temperature"], 1, 1, stride=3
+    )
+    assert len(dataset) == 6
+    assert _window_starts(dataset) == [0, 3, 6, 0, 3, 6]
+
+
+@pytest.mark.parametrize("stride", [1, 2, 4])
+def test_in_memory_dataset_strides_like_the_disk_dataset(
+    ten_frames: Path, stride: int
+) -> None:
+    arguments = ([ten_frames], ["temperature"], 2, 1)
+    on_disk = FlashXForecastDataset(*arguments, start_frame=1, stride=stride)
+    in_memory = FlashXInMemoryForecastDataset(*arguments, start_frame=1, stride=stride)
+    assert len(in_memory) == len(on_disk)
+    for index in range(len(on_disk)):
+        torch.testing.assert_close(
+            in_memory[index][1].fields["temperature"],
+            on_disk[index][1].fields["temperature"],
+        )
+
+
+@pytest.mark.parametrize("stride", [0, -1])
+def test_stride_must_be_positive(ten_frames: Path, stride: int) -> None:
+    with pytest.raises(ValueError, match="stride must be positive"):
+        FlashXForecastDataset([ten_frames], ["temperature"], 1, 1, stride=stride)
