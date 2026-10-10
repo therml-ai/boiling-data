@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from boiling_data.flashx.batch import FlashXBatch
+from boiling_data.statistics import is_sequence_of_mappings
 
 # (value, offset, scale) -> transformed value, for floats and tensors alike
 type Transform = Callable[[Any, float, float], Any]
@@ -161,7 +162,7 @@ def _transform_config(
             transformed[name] = _transform_config(
                 value, statistics.get(name, {}), transform, scaling, f"{key}."
             )
-        elif _is_sequence_of_mappings(value):
+        elif is_sequence_of_mappings(value):
             transformed[name] = [
                 _transform_config(
                     entry, statistics.get(name, {}), transform, scaling, f"{key}."
@@ -177,11 +178,3 @@ def _transform_config(
         else:
             transformed[name] = value
     return transformed
-
-
-def _is_sequence_of_mappings(value: Any) -> bool:
-    return (
-        isinstance(value, (list, tuple))
-        and bool(value)
-        and all(isinstance(entry, Mapping) for entry in value)
-    )

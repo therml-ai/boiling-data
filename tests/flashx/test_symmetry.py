@@ -39,8 +39,8 @@ def test_even_reflection_of_a_cell_centered_field() -> None:
     np.testing.assert_array_equal(mirrored.data[0, 0], [2.5, 1.5, 0.5, 0.5, 1.5, 2.5])
 
 
-def test_odd_reflection_flips_sign() -> None:
-    mirrored = mirror_field_x(_centered(3), odd=True)
+def test_negated_reflection_flips_sign() -> None:
+    mirrored = mirror_field_x(_centered(3), negate=True)
     np.testing.assert_array_equal(
         mirrored.data[0, 0], [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]
     )
@@ -49,7 +49,7 @@ def test_odd_reflection_flips_sign() -> None:
 def test_face_on_the_axis_is_kept_once() -> None:
     grid_x = np.arange(4.0)
     faces = Field(grid_x[None, None, :] * np.ones((1, 2, 1)), grid_x, np.arange(2.0))
-    mirrored = mirror_field_x(faces, odd=True)
+    mirrored = mirror_field_x(faces, negate=True)
     np.testing.assert_array_equal(mirrored.grid_x, [-3, -2, -1, 0, 1, 2, 3])
     np.testing.assert_array_equal(mirrored.data[0, 0], [-3, -2, -1, 0, 1, 2, 3])
 
@@ -62,15 +62,30 @@ def test_mirrored_fields_double_in_width(full_domain: BoilingSimulation) -> None
     assert (x_faces[0], x_faces[WIDTH], x_faces[-1]) == (-2.0, 0.0, 2.0)
 
 
-def test_scalars_are_even_and_x_components_odd(
+def test_x_components_and_vorticity_are_negated_and_the_rest_mirrored(
     full_domain: BoilingSimulation,
 ) -> None:
     for name in ("temperature", "dfun", "vely", "velfacey"):
         data = full_domain.field(name).data
         np.testing.assert_array_equal(data, data[..., ::-1])
-    for name in ("velx", "normx", "velfacex"):
+    for name in ("velx", "normx", "velfacex", "omgm"):
         data = full_domain.field(name).data
         np.testing.assert_array_equal(data, -data[..., ::-1])
+
+
+def test_mirrored_vorticity_agrees_with_the_velocity_on_both_halves(
+    full_domain: BoilingSimulation,
+) -> None:
+    velx, vely, omgm = (full_domain.field(name) for name in ("velx", "vely", "omgm"))
+    vorticity = np.gradient(vely.data, vely.grid_x, axis=-1) - np.gradient(
+        velx.data, velx.grid_y, axis=-2
+    )
+    left = velx.grid_x < 0
+    for half in (left, ~left):
+        correlation = np.corrcoef(
+            omgm.data[..., half].ravel(), vorticity[..., half].ravel()
+        )[0, 1]
+        assert correlation > 0.5
 
 
 def test_right_half_is_unchanged(

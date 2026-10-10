@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,7 +76,7 @@ def field_statistics(
     return {name: field.record() for name, field in statistics.items()}
 
 
-def config_statistics(configs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def config_statistics(configs: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Statistics of every numeric config parameter over the configs, nested by
     the configs' own groups and key names. A list of dicts, such as heaters, is
     summarized as one dict over all of its entries; other lists, strings and
@@ -107,11 +107,11 @@ def dataset_statistics(
     }
 
 
-def _accumulate(tree: StatisticsTree, values: dict[str, Any]) -> None:
+def _accumulate(tree: StatisticsTree, values: Mapping[str, Any]) -> None:
     for name, value in values.items():
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             _accumulate(_subtree(tree, name), value)
-        elif _is_list_of_dicts(value):
+        elif is_sequence_of_mappings(value):
             for entry in value:
                 _accumulate(_subtree(tree, name), entry)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -120,11 +120,13 @@ def _accumulate(tree: StatisticsTree, values: dict[str, Any]) -> None:
             statistics.update(np.array([float(value)]))
 
 
-def _is_list_of_dicts(value: Any) -> bool:
+def is_sequence_of_mappings(value: Any) -> bool:
+    """Whether value is a non-empty list of dicts, such as a config's heaters; a
+    tuple counts too, since a frozen config holds its lists as tuples."""
     return (
-        isinstance(value, list)
+        isinstance(value, (list, tuple))
         and bool(value)
-        and all(isinstance(entry, dict) for entry in value)
+        and all(isinstance(entry, Mapping) for entry in value)
     )
 
 

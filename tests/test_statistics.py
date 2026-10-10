@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from boiling_data.boiling_data import BoilingSimulation, SimulationParameters
+from boiling_data.frozen import freeze
 from boiling_data.statistics import (
     RunningStatistics,
     bubbleml_config_statistics,
@@ -114,3 +115,10 @@ def test_dataset_statistics_hold_fields_and_config_under_separate_keys(
     assert set(statistics) == {"fields", "config"}
     assert set(statistics["fields"]) == {"temperature"}
     assert statistics["config"] == bubbleml_config_statistics([bubbleml_path])
+
+
+def test_frozen_configs_keep_their_heaters() -> None:
+    configs = [_config(0.5, [1.0]), _config(0.2, [0.5, 1.0])]
+    frozen = config_statistics(freeze(configs))
+    assert frozen == config_statistics(configs)
+    assert frozen["heaters"]["wall_temp_fraction"]["count"] == 3
