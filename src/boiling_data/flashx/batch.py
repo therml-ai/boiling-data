@@ -37,12 +37,15 @@ class FlashXBatch:
         ``{"non_dimensional": ["stefan"], "heaters": ["wall_temp_fraction"]}``;
         its columns follow the groups and then the names in the order given.
     device: where the fields are moved to and the config tensor is created.
+    is_normalized: whether the fields and configs hold normalized values, set by
+        NormalizerWrapper.normalize and cleared by its unnormalize.
     """
 
     fields: dict[str, torch.Tensor]
     configs: Sequence[Mapping[str, Any]]
     config_keys: ConfigKeys = field(default_factory=dict)
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
+    is_normalized: bool = False
     _config_rows: list[list[float]] = field(init=False, repr=False)
     _parameters: dict[tuple[str, str], torch.Tensor] = field(
         init=False, repr=False, compare=False, default_factory=dict
@@ -86,13 +89,21 @@ class FlashXBatch:
             name: tensor.to(device, non_blocking=non_blocking)
             for name, tensor in self.fields.items()
         }
-        return FlashXBatch(fields, list(self.configs), self.config_keys, device)
+        return FlashXBatch(
+            fields, list(self.configs), self.config_keys, device, self.is_normalized
+        )
 
     def pin_memory(self) -> "FlashXBatch":
         """Called by a DataLoader with ``pin_memory=True``, which otherwise passes
         objects it does not recognize through unpinned."""
         fields = {name: tensor.pin_memory() for name, tensor in self.fields.items()}
-        return FlashXBatch(fields, list(self.configs), self.config_keys, self.device)
+        return FlashXBatch(
+            fields,
+            list(self.configs),
+            self.config_keys,
+            self.device,
+            self.is_normalized,
+        )
 
     def config_tensor(self) -> torch.Tensor:
         """[batch_size, number of config keys] float32 tensor of every config's
@@ -123,10 +134,14 @@ class FlashXBatch:
 
     def with_fields(self, fields: dict[str, torch.Tensor]) -> "FlashXBatch":
         """A batch of exactly these fields, such as a model's predictions, for the
-        same samples: the configs, config_keys and device are kept. To keep some
-        of this batch's fields too, pass ``{**batch.fields, **fields}``."""
+        same samples: the configs, config_keys, device and is_normalized are kept.
+        To keep some of this batch's fields too, pass ``{**batch.fields, **fields}``."""
         return FlashXBatch(
-            dict(fields), list(self.configs), self.config_keys, self.device
+            dict(fields),
+            list(self.configs),
+            self.config_keys,
+            self.device,
+            self.is_normalized,
         )
 
     @property
@@ -155,6 +170,12 @@ class FlashXBatch:
             )
         if other.configs != self.configs:
             raise ValueError("cannot extend a batch with frames of different samples")
+        if other.is_normalized != self.is_normalized:
+            raise ValueError(
+                "cannot extend a batch with frames that are "
+                f"{_normalization_name(other.is_normalized)}; this batch is "
+                f"{_normalization_name(self.is_normalized)}"
+            )
         return self.with_fields(
             {
                 name: torch.cat((tensor, other.fields[name].to(self.device)), dim=1)
@@ -215,6 +236,10 @@ class FlashXBatch:
             raise KeyError(
                 f"batch has no fields {missing}; it has {sorted(self.fields)}"
             )
+
+
+def _normalization_name(is_normalized: bool) -> str:
+    return "normalized" if is_normalized else "not normalized"
 
 
 def collate_samples(

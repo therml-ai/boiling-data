@@ -200,7 +200,9 @@ def _flip_fields(
                 flipped = -flipped
             mask = selected.view(-1, *([1] * (tensor.ndim - 1)))
             fields[name] = torch.where(mask, flipped, tensor)
-    return FlashXBatch(fields, configs, windows.config_keys, windows.device)
+    return FlashXBatch(
+        fields, configs, windows.config_keys, windows.device, windows.is_normalized
+    )
 
 
 def reflected_config(

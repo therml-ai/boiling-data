@@ -72,10 +72,14 @@ class NormalizerWrapper(nn.Module):
         )
 
     def normalize(self, batch: FlashXBatch) -> FlashXBatch:
-        return self._transform(batch, _standardize)
+        if batch.is_normalized:
+            raise ValueError("the batch is already normalized")
+        return self._transform(batch, _standardize, is_normalized=True)
 
     def unnormalize(self, batch: FlashXBatch) -> FlashXBatch:
-        return self._transform(batch, _unstandardize)
+        if not batch.is_normalized:
+            raise ValueError("the batch is not normalized")
+        return self._transform(batch, _unstandardize, is_normalized=False)
 
     def get_extra_state(self) -> dict[str, Any]:
         return {"statistics": self.statistics, "config_scaling": self.config_scaling}
@@ -84,14 +88,18 @@ class NormalizerWrapper(nn.Module):
         self.statistics = _validated_statistics(state["statistics"])
         self.config_scaling = _validated_config_scaling(state["config_scaling"])
 
-    def _transform(self, batch: FlashXBatch, transform: Transform) -> FlashXBatch:
+    def _transform(
+        self, batch: FlashXBatch, transform: Transform, is_normalized: bool
+    ) -> FlashXBatch:
         fields = self._transform_fields(batch.fields, transform)
         scaling = CONFIG_SCALINGS[self.config_scaling]
         configs = [
             _transform_config(config, self.statistics["config"], transform, scaling, "")
             for config in batch.configs
         ]
-        return FlashXBatch(fields, configs, batch.config_keys, batch.device)
+        return FlashXBatch(
+            fields, configs, batch.config_keys, batch.device, is_normalized
+        )
 
     def _transform_fields(
         self, fields: Mapping[str, torch.Tensor], transform: Transform

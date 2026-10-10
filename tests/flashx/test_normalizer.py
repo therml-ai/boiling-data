@@ -106,6 +106,21 @@ def test_unnormalize_inverts_normalize() -> None:
     torch.testing.assert_close(restored.config_tensor(), batch.config_tensor())
 
 
+def test_normalize_and_unnormalize_set_is_normalized() -> None:
+    normalizer = NormalizerWrapper(STATISTICS)
+    normalized = normalizer.normalize(_batch())
+    assert normalized.is_normalized
+    assert not normalizer.unnormalize(normalized).is_normalized
+
+
+def test_a_batch_is_normalized_at_most_once() -> None:
+    normalizer = NormalizerWrapper(STATISTICS)
+    with pytest.raises(ValueError, match="already normalized"):
+        normalizer.normalize(normalizer.normalize(_batch()))
+    with pytest.raises(ValueError, match="is not normalized"):
+        normalizer.unnormalize(_batch())
+
+
 def test_missing_statistics_are_reported() -> None:
     normalizer = NormalizerWrapper(STATISTICS)
     with pytest.raises(KeyError, match="no statistics for field 'dfun'"):
@@ -142,6 +157,8 @@ def test_forward_runs_the_module_on_normalized_batches() -> None:
     torch.testing.assert_close(
         output.fields["temperature"], batch.fields["temperature"]
     )
+    assert recorder.seen.is_normalized
+    assert not output.is_normalized
 
 
 def test_forward_needs_a_module() -> None:

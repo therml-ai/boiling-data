@@ -337,6 +337,22 @@ def test_extend_needs_the_same_fields_and_samples() -> None:
         history.extend(other_samples)
 
 
+def test_batches_are_not_normalized_unless_marked() -> None:
+    batch = _batch([_config(1.0, 0.5)])
+    assert not batch.is_normalized
+    normalized = FlashXBatch(dict(batch.fields), batch.configs, is_normalized=True)
+    assert normalized.with_fields({"dfun": torch.ones(1, 1, 4, 3)}).is_normalized
+    assert normalized.tail_time_window(1).is_normalized
+    assert normalized.to(torch.device("cpu")).is_normalized
+
+
+def test_extend_needs_frames_of_the_same_normalization() -> None:
+    history = _frames(0, 3)
+    normalized = FlashXBatch(dict(history.fields), history.configs, is_normalized=True)
+    with pytest.raises(ValueError, match="frames that are normalized"):
+        history.extend(normalized)
+
+
 def test_fields_must_share_one_number_of_timesteps() -> None:
     mismatched = {
         "temperature": torch.zeros(1, 2, 4, 3),
