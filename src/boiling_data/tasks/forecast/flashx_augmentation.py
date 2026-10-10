@@ -1,3 +1,4 @@
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -101,6 +102,57 @@ class FlipAugmentation(nn.Module):
             ]
             for config, sample_draws in zip(configs, draws, strict=True)
         ]
+
+
+class GaussianNoiseAugmentation(nn.Module):
+    def __init__(
+        self,
+        min_std: float,
+        max_std: float,
+        fields: Sequence[str] | None = None,
+        generator: torch.Generator | None = None,
+    ) -> None:
+        super().__init__()
+        if not 0 < min_std <= max_std:
+            raise ValueError(
+                f"the noise stds need 0 < min_std <= max_std, not min_std={min_std} "
+                f"and max_std={max_std}"
+            )
+        self.min_std = min_std
+        self.max_std = max_std
+        self.fields = None if fields is None else list(fields)
+        self.generator = generator
+
+    def forward(self, batch: FlashXForecastBatch) -> FlashXForecastBatch:
+        if not self.training:
+            return batch
+        names = list(batch.input.fields) if self.fields is None else self.fields
+        stds = self.sample_stds(batch.input.batch_size, batch.input.device)
+        fields = dict(batch.input.fields)
+        for name in names:
+            fields[name] = fields[name] + self._noise(fields[name], stds)
+        return FlashXForecastBatch(batch.input.with_fields(fields), batch.target)
+
+    def sample_stds(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        """One std per sample, log-uniform in [min_std, max_std]."""
+        uniform = torch.rand(
+            batch_size, generator=self.generator, device=self._draw_device(device)
+        )
+        log_min, log_max = math.log(self.min_std), math.log(self.max_std)
+        return torch.exp(log_min + uniform * (log_max - log_min)).to(device)
+
+    def _noise(self, field: torch.Tensor, stds: torch.Tensor) -> torch.Tensor:
+        noise = torch.randn(
+            field.shape,
+            generator=self.generator,
+            dtype=field.dtype,
+            device=self._draw_device(field.device),
+        ).to(field.device)
+        return noise * stds.to(field.dtype).view(-1, *([1] * (field.ndim - 1)))
+
+    def _draw_device(self, device: torch.device) -> torch.device:
+        # a generator can only draw on its own device, which need not be the batch's
+        return device if self.generator is None else self.generator.device
 
 
 class ForecastAugmentation(nn.Module):

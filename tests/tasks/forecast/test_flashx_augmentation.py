@@ -8,6 +8,7 @@ from boiling_data.flashx.batch import FlashXBatch
 from boiling_data.tasks.forecast.flashx_augmentation import (
     FlipAugmentation,
     ForecastAugmentation,
+    GaussianNoiseAugmentation,
 )
 from boiling_data.tasks.forecast.flashx_batch import FlashXForecastBatch
 
@@ -245,3 +246,107 @@ def test_forecast_augmentation_in_eval_mode_runs_nothing() -> None:
 def test_forecast_augmentation_without_augmentations_changes_nothing() -> None:
     batch = _batch(_config())
     assert ForecastAugmentation()(batch) is batch
+
+
+def _zeros_batch() -> FlashXForecastBatch:
+    """Large zero fields, so whatever is added to them is the noise alone."""
+    configs = [_config() for _ in range(4)]
+
+    def windows(timesteps: int) -> FlashXBatch:
+        return FlashXBatch(
+            {
+                "temperature": torch.zeros(4, timesteps, 64, 64),
+                "velx": torch.zeros(4, timesteps, 64, 64),
+            },
+            configs,
+        )
+
+    return FlashXForecastBatch(windows(2), windows(1))
+
+
+def test_noise_is_added_to_the_input_only() -> None:
+    batch = _batch(_config())
+    noisy = GaussianNoiseAugmentation(0.01, 0.1)(batch)
+    assert noisy.target is batch.target
+    assert noisy.input.configs == batch.input.configs
+    for name, tensor in batch.input.fields.items():
+        assert not torch.equal(noisy.input.fields[name], tensor)
+
+
+def test_equal_std_bounds_give_a_fixed_std_for_every_field() -> None:
+    noisy = GaussianNoiseAugmentation(0.1, 0.1)(_zeros_batch())
+    for noise in noisy.input.fields.values():
+        assert noise.mean().item() == pytest.approx(0.0, abs=5e-3)
+        assert noise.std().item() == pytest.approx(0.1, rel=0.05)
+
+
+def test_each_sample_gets_its_own_std_shared_by_its_fields() -> None:
+    augmentation = GaussianNoiseAugmentation(
+        0.01, 1.0, generator=torch.Generator().manual_seed(5)
+    )
+    noisy = augmentation(_zeros_batch())
+    # the forward pass draws the stds first, so the same seed gives them back
+    augmentation.generator = torch.Generator().manual_seed(5)
+    stds = augmentation.sample_stds(4, torch.device("cpu"))
+    for noise in noisy.input.fields.values():
+        sample_stds = noise.flatten(start_dim=1).std(dim=1)
+        torch.testing.assert_close(sample_stds, stds, rtol=0.05, atol=0.0)
+
+
+def test_stds_are_log_uniform_between_the_bounds() -> None:
+    augmentation = GaussianNoiseAugmentation(
+        1e-3, 1e-1, generator=torch.Generator().manual_seed(0)
+    )
+    stds = augmentation.sample_stds(20_000, torch.device("cpu"))
+    assert stds.min().item() >= 1e-3
+    assert stds.max().item() <= 1e-1
+    # log-uniform puts as many stds in [1e-3, 1e-2] as in [1e-2, 1e-1]
+    assert (stds < 1e-2).float().mean().item() == pytest.approx(0.5, abs=0.02)
+
+
+def test_noise_reaches_only_the_named_fields() -> None:
+    batch = _zeros_batch()
+    noisy = GaussianNoiseAugmentation(0.01, 0.1, fields=["velx"])(batch)
+    assert torch.equal(
+        noisy.input.fields["temperature"], batch.input.fields["temperature"]
+    )
+    assert not torch.equal(noisy.input.fields["velx"], batch.input.fields["velx"])
+
+
+def test_eval_mode_leaves_the_batch_alone() -> None:
+    batch = _batch(_config())
+    assert GaussianNoiseAugmentation(0.01, 0.1).eval()(batch) is batch
+
+
+def test_a_seeded_generator_makes_the_noise_reproducible() -> None:
+    batch = _zeros_batch()
+    noisy = [
+        GaussianNoiseAugmentation(
+            0.01, 0.1, generator=torch.Generator().manual_seed(3)
+        )(batch)
+        for _ in range(2)
+    ]
+    torch.testing.assert_close(
+        noisy[0].input.fields["velx"], noisy[1].input.fields["velx"]
+    )
+
+
+@pytest.mark.parametrize(("min_std", "max_std"), [(0.0, 0.1), (-0.1, 0.1), (0.2, 0.1)])
+def test_noise_needs_positive_ordered_std_bounds(
+    min_std: float, max_std: float
+) -> None:
+    with pytest.raises(ValueError, match="0 < min_std <= max_std"):
+        GaussianNoiseAugmentation(min_std, max_std)
+
+
+def test_flips_and_noise_combine() -> None:
+    batch = _batch(_config(gravy=-1.0))
+    augmented = ForecastAugmentation(
+        [_always_flip(), GaussianNoiseAugmentation(0.01, 0.1)]
+    )(batch)
+    torch.testing.assert_close(
+        augmented.target.fields["velx"], -batch.target.fields["velx"].flip(-1)
+    )
+    assert not torch.equal(
+        augmented.input.fields["velx"], -batch.input.fields["velx"].flip(-1)
+    )
