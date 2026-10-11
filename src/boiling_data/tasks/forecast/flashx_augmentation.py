@@ -126,6 +126,11 @@ class GaussianNoiseAugmentation(nn.Module):
     def forward(self, batch: FlashXForecastBatch) -> FlashXForecastBatch:
         if not self.training:
             return batch
+        if not batch.input.is_normalized:
+            raise ValueError(
+                "GaussianNoiseAugmentation's stds are in normalized units, but the "
+                "input is not normalized; normalize the batch before adding noise"
+            )
         names = list(batch.input.fields) if self.fields is None else self.fields
         stds = self.sample_stds(batch.input.batch_size, batch.input.device)
         fields = dict(batch.input.fields)

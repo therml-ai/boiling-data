@@ -52,7 +52,9 @@ def _ramp(
     return index.view(view).expand(shape).clone()
 
 
-def _windows(configs: list[dict[str, Any]], timesteps: int) -> FlashXBatch:
+def _windows(
+    configs: list[dict[str, Any]], timesteps: int, is_normalized: bool = False
+) -> FlashXBatch:
     size = len(configs)
     return FlashXBatch(
         {
@@ -65,11 +67,17 @@ def _windows(configs: list[dict[str, Any]], timesteps: int) -> FlashXBatch:
         },
         configs,
         CONFIG_KEYS,
+        is_normalized=is_normalized,
     )
 
 
-def _batch(*configs: dict[str, Any]) -> FlashXForecastBatch:
-    return FlashXForecastBatch(_windows(list(configs), 2), _windows(list(configs), 1))
+def _batch(
+    *configs: dict[str, Any], is_normalized: bool = False
+) -> FlashXForecastBatch:
+    return FlashXForecastBatch(
+        _windows(list(configs), 2, is_normalized),
+        _windows(list(configs), 1, is_normalized),
+    )
 
 
 def _always_flip() -> FlipAugmentation:
@@ -259,13 +267,14 @@ def _zeros_batch() -> FlashXForecastBatch:
                 "velx": torch.zeros(4, timesteps, 64, 64),
             },
             configs,
+            is_normalized=True,
         )
 
     return FlashXForecastBatch(windows(2), windows(1))
 
 
 def test_noise_is_added_to_the_input_only() -> None:
-    batch = _batch(_config())
+    batch = _batch(_config(), is_normalized=True)
     noisy = GaussianNoiseAugmentation(0.01, 0.1)(batch)
     assert noisy.target is batch.target
     assert noisy.input.configs == batch.input.configs
@@ -331,6 +340,11 @@ def test_a_seeded_generator_makes_the_noise_reproducible() -> None:
     )
 
 
+def test_noise_needs_a_normalized_input() -> None:
+    with pytest.raises(ValueError, match="input is not normalized"):
+        GaussianNoiseAugmentation(0.01, 0.1)(_batch(_config()))
+
+
 @pytest.mark.parametrize(("min_std", "max_std"), [(0.0, 0.1), (-0.1, 0.1), (0.2, 0.1)])
 def test_noise_needs_positive_ordered_std_bounds(
     min_std: float, max_std: float
@@ -340,7 +354,7 @@ def test_noise_needs_positive_ordered_std_bounds(
 
 
 def test_flips_and_noise_combine() -> None:
-    batch = _batch(_config(gravy=-1.0))
+    batch = _batch(_config(gravy=-1.0), is_normalized=True)
     augmented = ForecastAugmentation(
         [_always_flip(), GaussianNoiseAugmentation(0.01, 0.1)]
     )(batch)
