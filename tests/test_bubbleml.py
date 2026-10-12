@@ -11,6 +11,7 @@ from boiling_data.bubbleml import (
     PARAMETERS_ATTRIBUTE,
     UNITS_ATTRIBUTE,
     read_bubbleml,
+    read_bubbleml_field_names,
     read_bubbleml_num_timesteps,
     read_bubbleml_units,
     write_bubbleml,
@@ -163,6 +164,14 @@ def test_selecting_a_missing_field_raises(bubbleml_path: Path) -> None:
 
 def test_num_timesteps(bubbleml_path: Path) -> None:
     assert read_bubbleml_num_timesteps(bubbleml_path) == NUM_FRAMES
+
+
+def test_field_names_are_the_stored_fields(
+    bubbleml_path: Path, bubbleml_case: BoilingSimulation
+) -> None:
+    assert sorted(read_bubbleml_field_names(bubbleml_path)) == sorted(
+        bubbleml_case.fields
+    )
 
 
 def test_units_of_the_dimensional_parameters_are_stored(

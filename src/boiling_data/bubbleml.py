@@ -151,6 +151,14 @@ def read_bubbleml_num_timesteps(path: str | os.PathLike[str]) -> int:
         return int(handle[_stored_field_names(handle, grid)[0]].shape[0])
 
 
+def read_bubbleml_field_names(path: str | os.PathLike[str]) -> list[str]:
+    """The names of the fields a file stores, without reading their data."""
+    path = Path(path)
+    with h5py.File(path, "r") as handle:
+        grid = _grid(_read_parameters(handle, path).discretization)
+        return _stored_field_names(handle, grid)
+
+
 def read_bubbleml_parameters(path: str | os.PathLike[str]) -> SimulationParameters:
     path = Path(path)
     with h5py.File(path, "r") as handle:
