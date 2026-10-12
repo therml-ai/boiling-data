@@ -1,7 +1,10 @@
-"""Check simulations for possible errors: missing or inconsistent parameters,
-non-finite values, out-of-order time, and physically implausible fields such as a
-divergent velocity away from the interface. Exits with status 1 if any check
-reports an error."""
+"""Check simulations for possible errors:
+1. missing or inconsistent parameters,
+2. non-finite values,
+3. out-of-order time,
+4. physically implausible fields such as a divergent velocity away from the interface.
+
+Exits with status 1 if any check reports an error."""
 
 import argparse
 import sys
