@@ -77,6 +77,20 @@ def write_bubbleml(simulation: BoilingSimulation, path: str | os.PathLike[str]) 
     return path
 
 
+def field_on_grid(name: str, data: FloatArray, discretization: dict[str, Any]) -> Field:
+    """data, [T, Y, X], as a Field sampled at the cell centers or faces of the
+    grid the discretization parameters describe, whichever its shape matches."""
+    return _field_on_grid(name, data, _grid(discretization))
+
+
+def _field_on_grid(name: str, data: FloatArray, grid: dict[str, FloatArray]) -> Field:
+    return Field(
+        data,
+        grid_x=_axis_coordinates(name, data.shape[-1], grid, "x"),
+        grid_y=_axis_coordinates(name, data.shape[-2], grid, "y"),
+    )
+
+
 def _axis_coordinates(
     name: str, num_samples: int, grid: dict[str, FloatArray], axis: str
 ) -> FloatArray:
@@ -125,11 +139,7 @@ def read_bubbleml(
             raise KeyError(f"{path} has no fields {missing}; it has {sorted(stored)}")
         for name in selected:
             data = handle[name][frames].astype(np.float64)
-            fields[name] = Field(
-                data,
-                grid_x=_axis_coordinates(name, data.shape[-1], grid, "x"),
-                grid_y=_axis_coordinates(name, data.shape[-2], grid, "y"),
-            )
+            fields[name] = _field_on_grid(name, data, grid)
         time = _read_time(handle, parameters.discretization, stored[0])[frames]
     return BoilingSimulation(fields=fields, parameters=parameters, time=time)
 

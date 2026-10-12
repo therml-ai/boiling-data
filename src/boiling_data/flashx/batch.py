@@ -2,10 +2,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import torch
 
+from boiling_data.boiling_data import (
+    BoilingSimulation,
+    FloatArray,
+    SimulationParameters,
+)
+from boiling_data.bubbleml import field_on_grid
 from boiling_data.flashx.reader import FIELD_NAMES
-from boiling_data.frozen import freeze
+from boiling_data.frozen import freeze, thaw
 
 # the last axis of a field is x and the one before it y
 FACE_FIELD_AXES = {FIELD_NAMES["fv_x"]: -1, FIELD_NAMES["fv_y"]: -2}
@@ -259,6 +266,49 @@ def collate_samples(
     return FlashXBatch(
         fields, [sample.config for sample in samples], config_keys, device
     )
+
+
+def batch_from_simulation(
+    simulation: BoilingSimulation,
+    field_names: Sequence[str],
+    config_keys: ConfigKeys | None = None,
+    frames: slice = slice(None),
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | None = None,
+) -> FlashXBatch:
+    """A batch of one sample: the named fields of simulation over frames, with its
+    parameters as the config, such as the history a rollout starts from."""
+    require_non_empty_sequence("field_names", field_names)
+    fields = {
+        name: torch.from_numpy(simulation.field(name).data[frames]).to(dtype)[None]
+        for name in field_names
+    }
+    return FlashXBatch(
+        fields,
+        [simulation.parameters.to_dict()],
+        config_keys or {},
+        torch.device("cpu") if device is None else device,
+    )
+
+
+def simulation_from_batch(
+    batch: FlashXBatch, time: FloatArray | Sequence[float], sample_index: int = 0
+) -> BoilingSimulation:
+    """One sample of a batch, such as a rollout's prediction, as a simulation on
+    the grid its config's discretization describes. time: the simulation time of
+    every frame, [T]."""
+    if batch.is_normalized:
+        raise ValueError("unnormalize the batch before converting it to a simulation")
+    parameters = SimulationParameters.from_dict(thaw(batch.configs[sample_index]))
+    fields = {
+        name: field_on_grid(
+            name,
+            tensor[sample_index].detach().to("cpu", torch.float64).numpy(),
+            parameters.discretization,
+        )
+        for name, tensor in batch.fields.items()
+    }
+    return BoilingSimulation(fields, parameters, np.asarray(time, dtype=np.float64))
 
 
 def unstack_field_cells(

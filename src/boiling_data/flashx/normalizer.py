@@ -1,6 +1,7 @@
 import json
+import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
 import torch
@@ -31,6 +32,10 @@ class NormalizerWrapper(nn.Module):
           or with ``config_scaling="standard"`` normalized by dataset mean and
           std.
         - values that are constant over a dataset only have mean subtracted.
+        - the components of each of ``vector_fields``, e.g. ``("velx", "vely")``,
+          share one scale, the root mean square of the components, and keep
+          their zero, so linear operators such as the divergence commute with
+          normalization.
     This can be used as a module: `NormalizerWrapper.from_json("stats.json", module)`
     to automatically normalize inputs and unnormalize outputs.
     The normalization statistics are saved with the module's state, so a checkpoint
@@ -42,11 +47,13 @@ class NormalizerWrapper(nn.Module):
         statistics: Mapping[str, Any],
         module: nn.Module | None = None,
         config_scaling: ConfigScaling = "min_max",
+        vector_fields: Sequence[Sequence[str]] = (),
     ) -> None:
         super().__init__()
         self.statistics = _validated_statistics(statistics)
         self.module = module
         self.config_scaling = _validated_config_scaling(config_scaling)
+        self.vector_fields = _validated_vector_fields(vector_fields, self.statistics)
 
     @classmethod
     def from_json(
@@ -54,9 +61,10 @@ class NormalizerWrapper(nn.Module):
         path: str | os.PathLike[str],
         module: nn.Module | None = None,
         config_scaling: ConfigScaling = "min_max",
+        vector_fields: Sequence[Sequence[str]] = (),
     ) -> "NormalizerWrapper":
         with open(path, encoding="utf-8") as handle:
-            return cls(json.load(handle), module, config_scaling)
+            return cls(json.load(handle), module, config_scaling, vector_fields)
 
     def forward(self, batch: FlashXBatch) -> FlashXBatch:
         if self.module is None:
@@ -81,12 +89,26 @@ class NormalizerWrapper(nn.Module):
             raise ValueError("the batch is not normalized")
         return self._transform(batch, _unstandardize, is_normalized=False)
 
+    def normalize_field(self, name: str, values: Any) -> Any:
+        """values of the field ``name``, a tensor or a float, normalized."""
+        return _standardize(values, *self.field_offset_and_scale(name))
+
+    def unnormalize_field(self, name: str, values: Any) -> Any:
+        return _unstandardize(values, *self.field_offset_and_scale(name))
+
     def get_extra_state(self) -> dict[str, Any]:
-        return {"statistics": self.statistics, "config_scaling": self.config_scaling}
+        return {
+            "statistics": self.statistics,
+            "config_scaling": self.config_scaling,
+            "vector_fields": self.vector_fields,
+        }
 
     def set_extra_state(self, state: dict[str, Any]) -> None:
         self.statistics = _validated_statistics(state["statistics"])
         self.config_scaling = _validated_config_scaling(state["config_scaling"])
+        self.vector_fields = _validated_vector_fields(
+            state["vector_fields"], self.statistics
+        )
 
     def _transform(
         self, batch: FlashXBatch, transform: Transform, is_normalized: bool
@@ -105,17 +127,51 @@ class NormalizerWrapper(nn.Module):
         self, fields: Mapping[str, torch.Tensor], transform: Transform
     ) -> dict[str, torch.Tensor]:
         return {
-            name: transform(tensor, *self._field_scale(name))
+            name: transform(tensor, *self.field_offset_and_scale(name))
             for name, tensor in fields.items()
         }
 
-    def _field_scale(self, name: str) -> tuple[float, float]:
-        if name not in self.statistics["fields"]:
-            raise KeyError(
-                f"no statistics for field {name!r}; there are statistics for "
-                f"{sorted(self.statistics['fields'])}"
-            )
+    def field_offset_and_scale(self, name: str) -> tuple[float, float]:
+        """The (offset, scale) a field is normalized by, (x - offset) / scale."""
+        _require_field_statistics(self.statistics, name)
+        for components in self.vector_fields:
+            if name in components:
+                return 0.0, _root_mean_square(
+                    [self.statistics["fields"][component] for component in components]
+                )
         return _mean_and_scale(self.statistics["fields"][name])
+
+
+def _require_field_statistics(statistics: Mapping[str, Any], name: str) -> None:
+    if name not in statistics["fields"]:
+        raise KeyError(
+            f"no statistics for field {name!r}; there are statistics for "
+            f"{sorted(statistics['fields'])}"
+        )
+
+
+def _validated_vector_fields(
+    vector_fields: Sequence[Sequence[str]], statistics: Mapping[str, Any]
+) -> list[list[str]]:
+    validated = [list(components) for components in vector_fields]
+    names = [name for components in validated for name in components]
+    if len(names) != len(set(names)):
+        raise ValueError(f"a field is in more than one vector field: {validated}")
+    for components in validated:
+        if len(components) < 2:
+            raise ValueError(f"a vector field needs two components, not {components}")
+        for name in components:
+            _require_field_statistics(statistics, name)
+    return validated
+
+
+def _root_mean_square(entries: Sequence[Mapping[str, float]]) -> float:
+    """The root mean square of values spread over several components, from each
+    component's mean and std: E[x^2] = std^2 + mean^2."""
+    mean_square = sum(
+        float(entry["std"]) ** 2 + float(entry["mean"]) ** 2 for entry in entries
+    ) / len(entries)
+    return math.sqrt(mean_square) if mean_square > 0 else 1.0
 
 
 def _validated_statistics(statistics: Mapping[str, Any]) -> dict[str, Any]:

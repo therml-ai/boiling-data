@@ -2,12 +2,15 @@ import dataclasses
 import pickle
 from typing import Any
 
+import numpy
 import pytest
 import torch
 
 from boiling_data.boiling_data import BoilingSimulation
 from boiling_data.flashx.batch import (
     FlashXBatch,
+    batch_from_simulation,
+    simulation_from_batch,
     unstack_field_cells,
 )
 
@@ -430,3 +433,49 @@ def test_batches_survive_pickling_for_data_loader_workers() -> None:
     restored = pickle.loads(pickle.dumps(batch))
     assert restored.configs == batch.configs
     torch.testing.assert_close(restored.config_tensor(), batch.config_tensor())
+
+
+def test_batch_from_simulation_holds_one_sample_of_the_frames(
+    bubbleml_case: BoilingSimulation,
+) -> None:
+    batch = batch_from_simulation(
+        bubbleml_case,
+        ["temperature", "velfacex"],
+        NON_DIMENSIONAL_KEYS,
+        frames=slice(1, 3),
+    )
+    assert batch.batch_size == 1
+    assert batch.fields["temperature"].shape == (1, 2, 288, 96)
+    assert batch.fields["velfacex"].shape == (1, 2, 288, 97)
+    assert batch.fields["temperature"].dtype == torch.float32
+    torch.testing.assert_close(
+        batch.fields["temperature"][0].double(),
+        torch.from_numpy(bubbleml_case.field("temperature").data[1:3]),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert batch.config_tensor().shape == (1, 2)
+
+
+def test_simulation_from_batch_inverts_batch_from_simulation(
+    bubbleml_case: BoilingSimulation,
+) -> None:
+    names = ["dfun", "velfacex", "velfacey"]
+    batch = batch_from_simulation(bubbleml_case, names, dtype=torch.float64)
+    simulation = simulation_from_batch(batch, bubbleml_case.time)
+    assert simulation.parameters == bubbleml_case.parameters
+    numpy.testing.assert_array_equal(simulation.time, bubbleml_case.time)
+    for name in names:
+        original = bubbleml_case.field(name)
+        numpy.testing.assert_array_equal(simulation.field(name).data, original.data)
+        numpy.testing.assert_allclose(simulation.field(name).grid_x, original.grid_x)
+        numpy.testing.assert_allclose(simulation.field(name).grid_y, original.grid_y)
+
+
+def test_simulation_from_batch_needs_unnormalized_fields(
+    bubbleml_case: BoilingSimulation,
+) -> None:
+    batch = batch_from_simulation(bubbleml_case, ["dfun"])
+    normalized = FlashXBatch(dict(batch.fields), batch.configs, is_normalized=True)
+    with pytest.raises(ValueError, match="unnormalize the batch"):
+        simulation_from_batch(normalized, bubbleml_case.time)

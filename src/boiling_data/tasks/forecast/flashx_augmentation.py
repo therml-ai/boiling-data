@@ -8,6 +8,7 @@ from torch import nn
 
 from boiling_data.flashx.batch import FlashXBatch
 from boiling_data.flashx.symmetry import NEGATED_BY_X_FLIP, NEGATED_BY_Y_FLIP
+from boiling_data.frozen import thaw
 from boiling_data.tasks.forecast.flashx_batch import FlashXForecastBatch
 
 GRAVITY = ("gravx", "gravy", "gravz")
@@ -214,7 +215,7 @@ def reflected_config(
     config: Mapping[str, Any], axes: Sequence[FlipAxis]
 ) -> dict[str, Any]:
     """The config of a sample mirrored along each of axes."""
-    reflected: dict[str, Any] = _thawed(config)
+    reflected: dict[str, Any] = thaw(config)
     for axis in axes:
         low, high = (float(reflected["discretization"][key]) for key in axis.domain)
         boundary = reflected.get("boundary", {})
@@ -241,12 +242,3 @@ def _reflect_heater(
         heater[axis.heater_sites] = [
             low + high - site for site in heater[axis.heater_sites]
         ]
-
-
-def _thawed(value: Any) -> Any:
-    """A mutable copy of a possibly frozen config."""
-    if isinstance(value, Mapping):
-        return {key: _thawed(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_thawed(item) for item in value]
-    return value

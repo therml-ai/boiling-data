@@ -4,7 +4,7 @@ import pickle
 
 import pytest
 
-from boiling_data.frozen import FrozenDict, freeze
+from boiling_data.frozen import FrozenDict, freeze, thaw
 
 
 def _frozen() -> FrozenDict:
@@ -50,3 +50,12 @@ def test_frozen_dict_pickles_and_copies() -> None:
     for restored in (pickle.loads(pickle.dumps(frozen)), copy.deepcopy(frozen)):
         assert restored == frozen
         assert isinstance(restored["physical"], FrozenDict)
+
+
+def test_thaw_gives_a_mutable_copy() -> None:
+    thawed = thaw(_frozen())
+    assert thawed == {"physical": {"bulk_temp": 58.0}, "sites": [0.0, 1.0]}
+    assert type(thawed) is dict and type(thawed["physical"]) is dict
+    assert type(thawed["sites"]) is list
+    thawed["physical"]["bulk_temp"] = 60.0
+    assert _frozen()["physical"]["bulk_temp"] == 58.0

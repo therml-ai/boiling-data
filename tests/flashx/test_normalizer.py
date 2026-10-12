@@ -284,3 +284,69 @@ def test_forward_keeps_the_input_configs_so_rollouts_can_extend() -> None:
     assert prediction.configs == history.configs
     extended = history.extend(prediction).tail_time_window(2)
     assert extended.configs[0]["non_dimensional"]["stefan"] == 0.072
+
+
+def _velocity_statistics() -> dict[str, Any]:
+    return {
+        "fields": {
+            "temperature": _entry(1.0, 2.0),
+            "velx": _entry(0.0, 3.0),
+            "vely": _entry(4.0, 0.0),
+        },
+        "config": {},
+    }
+
+
+def test_field_api_matches_the_batch_normalization() -> None:
+    normalizer = NormalizerWrapper(STATISTICS)
+    assert normalizer.field_offset_and_scale("temperature") == (1.0, 2.0)
+    assert normalizer.normalize_field("temperature", 5.0) == pytest.approx(2.0)
+    assert normalizer.unnormalize_field("temperature", 2.0) == pytest.approx(5.0)
+    with pytest.raises(KeyError, match="no statistics for field 'velx'"):
+        normalizer.normalize_field("velx", 1.0)
+
+
+def test_vector_components_share_a_root_mean_square_scale_and_keep_zero() -> None:
+    normalizer = NormalizerWrapper(
+        _velocity_statistics(), vector_fields=[("velx", "vely")]
+    )
+    # mean square of velx is 9 and of vely 16, so the shared scale is sqrt(12.5)
+    scale = (12.5) ** 0.5
+    for name in ("velx", "vely"):
+        assert normalizer.field_offset_and_scale(name) == pytest.approx((0.0, scale))
+    assert normalizer.field_offset_and_scale("temperature") == (1.0, 2.0)
+
+
+def test_vector_fields_commute_with_differences() -> None:
+    normalizer = NormalizerWrapper(
+        _velocity_statistics(), vector_fields=[("velx", "vely")]
+    )
+    velx = torch.randn(2, 1, 4, 5)
+    difference = normalizer.normalize_field("velx", velx[..., 1:] - velx[..., :-1])
+    normalized = normalizer.normalize_field("velx", velx)
+    torch.testing.assert_close(difference, normalized[..., 1:] - normalized[..., :-1])
+
+
+@pytest.mark.parametrize(
+    ("vector_fields", "error", "match"),
+    [
+        ([("velx",)], ValueError, "two components"),
+        ([("velx", "vely"), ("vely", "temperature")], ValueError, "more than one"),
+        ([("velx", "velz")], KeyError, "no statistics for field 'velz'"),
+    ],
+)
+def test_vector_fields_are_validated(
+    vector_fields: list[tuple[str, ...]], error: type[Exception], match: str
+) -> None:
+    with pytest.raises(error, match=match):
+        NormalizerWrapper(_velocity_statistics(), vector_fields=vector_fields)
+
+
+def test_vector_fields_are_saved_with_the_state_dict() -> None:
+    state = NormalizerWrapper(
+        _velocity_statistics(), vector_fields=[("velx", "vely")]
+    ).state_dict()
+    restored = NormalizerWrapper({"fields": {}, "config": {}})
+    restored.load_state_dict(state)
+    assert restored.vector_fields == [["velx", "vely"]]
+    assert restored.field_offset_and_scale("vely")[0] == 0.0

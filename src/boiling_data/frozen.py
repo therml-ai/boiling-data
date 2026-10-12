@@ -30,3 +30,13 @@ def freeze(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return tuple(freeze(item) for item in value)
     return value
+
+
+def thaw(value: Any) -> Any:
+    """A mutable copy of a possibly frozen value: every dict, at any depth, a dict
+    and every tuple a list."""
+    if isinstance(value, dict):
+        return {key: thaw(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw(item) for item in value]
+    return value
