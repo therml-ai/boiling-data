@@ -479,3 +479,53 @@ def test_simulation_from_batch_needs_unnormalized_fields(
     normalized = FlashXBatch(dict(batch.fields), batch.configs, is_normalized=True)
     with pytest.raises(ValueError, match="unnormalize the batch"):
         simulation_from_batch(normalized, bubbleml_case.time)
+
+
+def _domain_config(
+    x_max: float, y_max: float, z_max: float | None = None
+) -> dict[str, Any]:
+    discretization = {"x_min": 0.0, "x_max": x_max, "y_min": -1.0, "y_max": y_max}
+    if z_max is not None:
+        discretization |= {"z_min": 0.0, "z_max": z_max}
+    return {"discretization": discretization}
+
+
+def test_grid_spacing_is_one_value_per_sample_for_cell_and_face_fields() -> None:
+    batch = FlashXBatch(
+        {
+            "temperature": torch.zeros(2, 3, 4, 5),
+            "velfacex": torch.zeros(2, 3, 4, 6),
+            "velfacey": torch.zeros(2, 3, 5, 5),
+        },
+        [_domain_config(x_max=2.5, y_max=1.0), _domain_config(x_max=5.0, y_max=3.0)],
+    )
+    for name in ("temperature", "velfacex", "velfacey"):
+        torch.testing.assert_close(batch.dx(name), torch.tensor([0.5, 1.0]))
+        torch.testing.assert_close(batch.dy(name), torch.tensor([0.5, 1.0]))
+
+
+def test_grid_spacing_of_a_3d_field_includes_z() -> None:
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 2, 4, 5)},
+        [_domain_config(x_max=2.5, y_max=1.0, z_max=0.5)],
+    )
+    torch.testing.assert_close(batch.dz("temperature"), torch.tensor([0.25]))
+
+
+def test_a_2d_field_has_no_z_spacing() -> None:
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 4, 5)}, [_domain_config(2.5, 1.0)]
+    )
+    with pytest.raises(ValueError, match="no z axis"):
+        batch.dz("temperature")
+
+
+def test_grid_spacing_is_on_the_batch_device() -> None:
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 4, 5)},
+        [_domain_config(2.5, 1.0)],
+        device=torch.device("meta"),
+    )
+    spacing = batch.dx("temperature")
+    assert spacing.device == batch.device
+    assert spacing.dtype == torch.float32

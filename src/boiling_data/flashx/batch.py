@@ -33,9 +33,12 @@ class FlashXSample:
 
 @dataclass(frozen=True)
 class FlashXBatch:
-    """A batch of Flash-X samples. Nothing in it can be changed once it is built,
-    since the config tensor rows and parameters are read from the configs then;
-    with_fields and the time window methods build new batches instead.
+    """A batch of Flash-X samples. This object is intended to be immutable.
+
+    - `with_fields` creates a new batch with different fields, but the same config
+      tensor and parameters.
+    - `head_time_window` and `tail_time_window create a new batch by selecting the
+      first or last timesteps.
 
     fields: keyed by field name, each a tensor whose leading dimension is the batch.
     configs: the raw config dict of every sample in the batch, in batch order,
@@ -44,8 +47,9 @@ class FlashXBatch:
         ``{"non_dimensional": ["stefan"], "heaters": ["wall_temp_fraction"]}``;
         its columns follow the groups and then the names in the order given.
     device: where the fields are moved to and the config tensor is created.
-    is_normalized: whether the fields and configs hold normalized values, set by
-        NormalizerWrapper.normalize and cleared by its unnormalize.
+    is_normalized: whether the fields and configs hold normalized values, set
+        to True by NormalizerWrapper.normalize and set to False with
+        NormalizerWrapper.unnormalize.
     """
 
     fields: dict[str, torch.Tensor]
@@ -138,6 +142,31 @@ class FlashXBatch:
                 values, dtype=torch.float32, device=self.device
             )
         return self._parameters[key]
+
+    def dx(self, name: str) -> torch.Tensor:
+        """[batch_size] float32 tensor of every sample's x spacing on the grid of
+        field `name`. Assumes uniform grid"""
+        return self._spacing(name, "x", -1)
+
+    def dy(self, name: str) -> torch.Tensor:
+        return self._spacing(name, "y", -2)
+
+    def dz(self, name: str) -> torch.Tensor:
+        return self._spacing(name, "z", -3)
+
+    def _spacing(self, name: str, axis: str, dim: int) -> torch.Tensor:
+        self._require_fields([name])
+        tensor = self.fields[name]
+        # the batch and time axes come before the spatial ones
+        if tensor.ndim - 2 < -dim:
+            raise ValueError(
+                f"field {name!r} of shape {tuple(tensor.shape)} has no {axis} axis"
+            )
+        # a face field has one more sample than cells along its face axis
+        num_cells = tensor.shape[dim] - (1 if FACE_FIELD_AXES.get(name) == dim else 0)
+        low = self.parameter("discretization", f"{axis}_min")
+        high = self.parameter("discretization", f"{axis}_max")
+        return (high - low) / num_cells
 
     def with_fields(self, fields: dict[str, torch.Tensor]) -> "FlashXBatch":
         """A batch of exactly these fields, such as a model's predictions, for the

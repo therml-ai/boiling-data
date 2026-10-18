@@ -37,6 +37,47 @@ def test_simulation_rejects_fields_with_a_different_number_of_frames() -> None:
         )
 
 
+def _simulation(boiling_field: Field) -> BoilingSimulation:
+    return BoilingSimulation(
+        {"dfun": boiling_field},
+        SimulationParameters(),
+        time=np.zeros(boiling_field.num_timesteps),
+    )
+
+
+def test_simulation_gives_each_axis_grid_spacing_of_a_field() -> None:
+    boiling_field = Field(
+        np.zeros((1, 2, 4, 5)),
+        grid_x=np.arange(5, dtype=np.float64) * np.float64(0.5),
+        grid_y=np.arange(4, dtype=np.float64) * np.float64(0.25),
+        grid_z=np.arange(2, dtype=np.float64) * np.float64(0.125),
+    )
+    simulation = _simulation(boiling_field)
+    assert simulation.dx("dfun") == pytest.approx(0.5)
+    assert simulation.dy("dfun") == pytest.approx(0.25)
+    assert simulation.dz("dfun") == pytest.approx(0.125)
+
+
+def test_a_2d_field_has_no_z_spacing() -> None:
+    with pytest.raises(ValueError, match="2d"):
+        _simulation(_field()).dz("dfun")
+
+
+def test_a_nonuniform_grid_has_no_spacing() -> None:
+    boiling_field = Field(
+        np.zeros((1, 4, 3)),
+        grid_x=np.array([0.0, 1.0, 3.0]),
+        grid_y=np.arange(4, dtype=np.float64),
+    )
+    with pytest.raises(ValueError, match="nonuniform x grid"):
+        _simulation(boiling_field).dx("dfun")
+
+
+def test_a_single_point_axis_has_no_spacing() -> None:
+    with pytest.raises(ValueError, match="one y point"):
+        _simulation(_field(height=1)).dy("dfun")
+
+
 def test_boundary_has_every_side_empty_by_default() -> None:
     assert SimulationParameters().boundary == {
         "left": {},

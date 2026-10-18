@@ -206,6 +206,18 @@ def _renamed(values: dict[str, Any], old: str, new: str) -> dict[str, Any]:
     return renamed
 
 
+def _uniform_spacing(grid: FloatArray, name: str, axis: str) -> float:
+    if len(grid) < 2:
+        raise ValueError(
+            f"field {name!r} with grid {grid.shape} has less than two points "
+            f"along axis {axis}, so it has no spacing"
+        )
+    spacings = np.diff(grid)
+    if not np.allclose(spacings, spacings[0], rtol=1e-6, atol=0.0):
+        raise ValueError(f"field {name!r} has a nonuniform {axis} grid")
+    return float(spacings[0])
+
+
 @dataclass
 class BoilingSimulation:
     """
@@ -237,6 +249,18 @@ class BoilingSimulation:
 
     def field(self, name: str) -> Field:
         return self.fields[name]
+
+    def dx(self, name: str) -> float:
+        return _uniform_spacing(self.field(name).grid_x, name, "x")
+
+    def dy(self, name: str) -> float:
+        return _uniform_spacing(self.field(name).grid_y, name, "y")
+
+    def dz(self, name: str) -> float:
+        grid_z = self.field(name).grid_z
+        if grid_z is None:
+            raise ValueError(f"field {name!r} uses a 2d grid, so it has no z spacing")
+        return _uniform_spacing(grid_z, name, "z")
 
     @classmethod
     def from_flashx(
