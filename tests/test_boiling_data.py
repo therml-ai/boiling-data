@@ -74,7 +74,7 @@ def test_a_nonuniform_grid_has_no_spacing() -> None:
 
 
 def test_a_single_point_axis_has_no_spacing() -> None:
-    with pytest.raises(ValueError, match="one y point"):
+    with pytest.raises(ValueError, match="less than two points along axis y"):
         _simulation(_field(height=1)).dy("dfun")
 
 
