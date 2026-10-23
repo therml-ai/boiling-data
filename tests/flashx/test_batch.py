@@ -529,3 +529,14 @@ def test_grid_spacing_is_on_the_batch_device() -> None:
     spacing = batch.dx("temperature")
     assert spacing.device == batch.device
     assert spacing.dtype == torch.float32
+
+
+def test_grid_spacing_can_be_asked_for_on_another_device() -> None:
+    batch = FlashXBatch(
+        {"temperature": torch.zeros(1, 1, 4, 5)},
+        [_domain_config(2.5, 1.0)],
+        device=torch.device("meta"),
+    )
+    spacing = batch.dy("temperature", device=torch.device("cpu"))
+    assert spacing.device == torch.device("cpu")
+    torch.testing.assert_close(spacing, torch.tensor([0.5]))

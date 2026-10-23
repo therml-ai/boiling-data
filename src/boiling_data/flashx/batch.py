@@ -125,9 +125,9 @@ class FlashXBatch:
                 "flashx_collater to build a config tensor"
             )
         width = sum(len(names) for names in self.config_keys.values())
-        return torch.tensor(
-            self._config_rows, dtype=torch.float32, device=self.device
-        ).reshape(self.batch_size, width)
+        return _host_values_on(self._config_rows, self.device).reshape(
+            self.batch_size, width
+        )
 
     def parameter(self, group: str, name: str) -> torch.Tensor:
         """[batch_size] float32 tensor of one numeric config parameter of every
@@ -135,26 +135,32 @@ class FlashXBatch:
         config_keys. Built on first use and reused."""
         key = (group, name)
         if key not in self._parameters:
-            keys = _validated_config_keys({group: [name]})
-            _check_configs_have_keys(self.configs, keys)
-            values = [_config_row(config, keys)[0] for config in self.configs]
-            self._parameters[key] = torch.tensor(
-                values, dtype=torch.float32, device=self.device
+            self._parameters[key] = _host_values_on(
+                self._parameter_values(group, name), self.device
             )
         return self._parameters[key]
 
-    def dx(self, name: str) -> torch.Tensor:
+    def _parameter_values(self, group: str, name: str) -> list[float]:
+        keys = _validated_config_keys({group: [name]})
+        _check_configs_have_keys(self.configs, keys)
+        return [_config_row(config, keys)[0] for config in self.configs]
+
+    def dx(self, name: str, device: torch.device | None = None) -> torch.Tensor:
         """[batch_size] float32 tensor of every sample's x spacing on the grid of
-        field `name`. Assumes uniform grid"""
-        return self._spacing(name, "x", -1)
+        field `name`, on device, the batch's by default. Assumes uniform grid.
+        Reading the spacing back from a GPU waits for the GPU, so code that needs
+        it as a number can ask for it on the CPU."""
+        return self._spacing(name, "x", -1, device)
 
-    def dy(self, name: str) -> torch.Tensor:
-        return self._spacing(name, "y", -2)
+    def dy(self, name: str, device: torch.device | None = None) -> torch.Tensor:
+        return self._spacing(name, "y", -2, device)
 
-    def dz(self, name: str) -> torch.Tensor:
-        return self._spacing(name, "z", -3)
+    def dz(self, name: str, device: torch.device | None = None) -> torch.Tensor:
+        return self._spacing(name, "z", -3, device)
 
-    def _spacing(self, name: str, axis: str, dim: int) -> torch.Tensor:
+    def _spacing(
+        self, name: str, axis: str, dim: int, device: torch.device | None
+    ) -> torch.Tensor:
         self._require_fields([name])
         tensor = self.fields[name]
         # the batch and time axes come before the spatial ones
@@ -164,9 +170,10 @@ class FlashXBatch:
             )
         # a face field has one more sample than cells along its face axis
         num_cells = tensor.shape[dim] - (1 if FACE_FIELD_AXES.get(name) == dim else 0)
-        low = self.parameter("discretization", f"{axis}_min")
-        high = self.parameter("discretization", f"{axis}_max")
-        return (high - low) / num_cells
+        lows = self._parameter_values("discretization", f"{axis}_min")
+        highs = self._parameter_values("discretization", f"{axis}_max")
+        spacings = [(high - low) / num_cells for low, high in zip(lows, highs)]
+        return _host_values_on(spacings, self.device if device is None else device)
 
     def with_fields(self, fields: dict[str, torch.Tensor]) -> "FlashXBatch":
         """A batch of exactly these fields, such as a model's predictions, for the
@@ -272,6 +279,13 @@ class FlashXBatch:
             raise KeyError(
                 f"batch has no fields {missing}; it has {sorted(self.fields)}"
             )
+
+
+def _host_values_on(values: Sequence[Any], device: torch.device) -> torch.Tensor:
+    """A float32 tensor of host values on device. It is built on the host and
+    copied without blocking: a blocking copy to a GPU first waits for all of the
+    work already queued on it."""
+    return torch.tensor(values, dtype=torch.float32).to(device, non_blocking=True)
 
 
 def _normalization_name(is_normalized: bool) -> str:

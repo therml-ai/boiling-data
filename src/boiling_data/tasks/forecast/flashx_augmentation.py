@@ -197,9 +197,11 @@ def _flip_fields(
 ) -> FlashXBatch:
     fields = dict(windows.fields)
     for axis in FLIP_AXES:
-        selected = torch.tensor([axis in axes for axes in flips], device=windows.device)
-        if not selected.any():
+        # checked on the host, as reading a GPU tensor back waits for the GPU
+        flipped_samples = [axis in axes for axes in flips]
+        if not any(flipped_samples):
             continue
+        selected = torch.tensor(flipped_samples).to(windows.device, non_blocking=True)
         for name, tensor in fields.items():
             flipped = torch.flip(tensor, dims=[axis.dim])
             if name in axis.negated_fields:
