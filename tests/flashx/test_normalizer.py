@@ -350,3 +350,28 @@ def test_vector_fields_are_saved_with_the_state_dict() -> None:
     restored.load_state_dict(state)
     assert restored.vector_fields == [["velx", "vely"]]
     assert restored.field_offset_and_scale("vely")[0] == 0.0
+
+
+def _batch_on_a_grid() -> FlashXBatch:
+    batch = _batch()
+    grid = {"x_min": -2.0, "x_max": 3.0, "y_min": 0.0, "y_max": 2.0, "dt": 0.5}
+    configs = [{**config, "discretization": dict(grid)} for config in batch.configs]
+    return FlashXBatch(batch.fields, configs, batch.config_keys)
+
+
+def test_the_grid_discretization_is_never_normalized() -> None:
+    raw = _batch_on_a_grid()
+    normalizer = NormalizerWrapper(STATISTICS)
+    normalized = normalizer.normalize(raw)
+    unnormalized = normalizer.unnormalize(normalized)
+    for batch in (normalized, unnormalized):
+        assert [config["discretization"] for config in batch.configs] == [
+            config["discretization"] for config in raw.configs
+        ]
+        # the temperature field has 5 cells across x in [-2, 3] and 4 across y in [0, 2]
+        torch.testing.assert_close(batch.dx("temperature"), torch.full((2,), 1.0))
+        torch.testing.assert_close(batch.dy("temperature"), torch.full((2,), 0.5))
+    assert (
+        normalized.configs[0]["physical"]["bulk_temp"]
+        != raw.configs[0]["physical"]["bulk_temp"]
+    )

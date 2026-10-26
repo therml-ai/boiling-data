@@ -172,7 +172,9 @@ class FlashXBatch:
         num_cells = tensor.shape[dim] - (1 if FACE_FIELD_AXES.get(name) == dim else 0)
         lows = self._parameter_values("discretization", f"{axis}_min")
         highs = self._parameter_values("discretization", f"{axis}_max")
-        spacings = [(high - low) / num_cells for low, high in zip(lows, highs)]
+        spacings = [
+            (high - low) / num_cells for low, high in zip(lows, highs, strict=True)
+        ]
         return _host_values_on(spacings, self.device if device is None else device)
 
     def with_fields(self, fields: dict[str, torch.Tensor]) -> "FlashXBatch":

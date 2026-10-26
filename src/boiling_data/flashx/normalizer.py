@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import os
@@ -16,6 +17,10 @@ type Transform = Callable[[Any, float, float], Any]
 type Scaling = Callable[[Mapping[str, float]], tuple[float, float]]
 type ConfigScaling = Literal["standard", "min_max"]
 
+# config groups describing the grid and time stepping rather than the physics, which
+# FlashXBatch.dx, dy and dz read the spacing from
+UNNORMALIZED_CONFIG_GROUPS = frozenset({"discretization"})
+
 
 def _standardize(value: Any, mean: float, scale: float) -> Any:
     return (value - mean) / scale
@@ -32,6 +37,8 @@ class NormalizerWrapper(nn.Module):
           or with ``config_scaling="standard"`` normalized by dataset mean and
           std.
         - values that are constant over a dataset only have mean subtracted.
+        - the grid discretization config group is kept as it is, so a normalized
+          batch's dx, dy and dz are the grid spacings.
         - the components of each of ``vector_fields``, e.g. ``("velx", "vely")``,
           share one scale, the root mean square of the components, and keep
           their zero, so linear operators such as the divergence commute with
@@ -116,7 +123,9 @@ class NormalizerWrapper(nn.Module):
         fields = self._transform_fields(batch.fields, transform)
         scaling = CONFIG_SCALINGS[self.config_scaling]
         configs = [
-            _transform_config(config, self.statistics["config"], transform, scaling, "")
+            _transform_config_groups(
+                config, self.statistics["config"], transform, scaling
+            )
             for config in batch.configs
         ]
         return FlashXBatch(
@@ -207,6 +216,32 @@ CONFIG_SCALINGS: dict[str, Scaling] = {
     "standard": _mean_and_scale,
     "min_max": _center_and_half_range,
 }
+
+
+def _transform_config_groups(
+    config: Mapping[str, Any],
+    statistics: Mapping[str, Any],
+    transform: Transform,
+    scaling: Scaling,
+) -> dict[str, Any]:
+    """config with every group but those in UNNORMALIZED_CONFIG_GROUPS transformed."""
+    transformed = _transform_config(
+        {
+            name: value
+            for name, value in config.items()
+            if name not in UNNORMALIZED_CONFIG_GROUPS
+        },
+        statistics,
+        transform,
+        scaling,
+        "",
+    )
+    kept = {
+        name: copy.deepcopy(value)
+        for name, value in config.items()
+        if name in UNNORMALIZED_CONFIG_GROUPS
+    }
+    return {name: kept[name] if name in kept else transformed[name] for name in config}
 
 
 def _transform_config(
