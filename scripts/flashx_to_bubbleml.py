@@ -1,4 +1,7 @@
 import argparse
+import os
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 from boiling_data.boiling_data import BoilingSimulation
@@ -26,7 +29,18 @@ def parse_args() -> argparse.Namespace:
         help="the runs are symmetric about x = 0 and only computed the right half; "
         "write the full domain",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers(),
+        help="cases converted at once; each holds a whole case in memory",
+    )
     return parser.parse_args()
+
+
+def default_workers() -> int:
+    # os.cpu_count is the whole node's, not the cores a Slurm job was given
+    return int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
 
 
 def case_directories(sim_dir: Path, prefix: str) -> list[Path]:
@@ -40,19 +54,28 @@ def case_directories(sim_dir: Path, prefix: str) -> list[Path]:
     return cases
 
 
+def convert_case(case: Path, output_dir: Path, mirror_symmetric: bool) -> str:
+    simulation = BoilingSimulation.from_flashx(case, mirror_symmetric=mirror_symmetric)
+    path = simulation.to_bubbleml(output_dir / f"{case.name}.hdf5")
+    temperature = simulation.field("temperature")
+    return (
+        f"{case.name}: {simulation.num_timesteps} frames of "
+        f"{temperature.data.shape[-2]}x{temperature.data.shape[-1]} -> {path}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    for case in case_directories(args.sim_dir, args.prefix):
-        simulation = BoilingSimulation.from_flashx(
-            case, mirror_symmetric=args.mirror_symmetric
-        )
-        path = simulation.to_bubbleml(args.output_dir / f"{case.name}.hdf5")
-        temperature = simulation.field("temperature")
-        print(
-            f"{case.name}: {simulation.num_timesteps} frames of "
-            f"{temperature.data.shape[-2]}x{temperature.data.shape[-1]} -> {path}"
-        )
+    cases = case_directories(args.sim_dir, args.prefix)
+    convert = partial(
+        convert_case,
+        output_dir=args.output_dir,
+        mirror_symmetric=args.mirror_symmetric,
+    )
+    with ProcessPoolExecutor(max_workers=min(args.workers, len(cases))) as executor:
+        for summary in executor.map(convert, cases):
+            print(summary, flush=True)
 
 
 if __name__ == "__main__":
