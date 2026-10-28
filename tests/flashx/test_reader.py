@@ -1,4 +1,5 @@
 import shutil
+import warnings
 from pathlib import Path
 
 import h5py
@@ -227,15 +228,47 @@ def test_directory_without_plotfiles_is_rejected(tmp_path: Path) -> None:
         read_flashx(tmp_path)
 
 
-def test_heater_wall_temp_is_stored_as_a_fraction(tmp_path: Path) -> None:
-    path = tmp_path / "INS_Pool_Boiling_hdf5_htr_0000"
+def _write_heater(path: Path) -> Path:
     with h5py.File(path, "w") as handle:
         for name, value in {"xMin": -1.0, "xMax": 1.0, "wallTemp": 0.5}.items():
             handle.create_dataset(f"heater/{name}", data=np.array([value]))
         handle.create_dataset("init/radii", data=np.array([0.1]))
         handle.create_dataset("site/x", data=np.array([0.0]))
         handle.create_dataset("site/y", data=np.array([0.0]))
-    heater = read_heater(path)
+    return path
+
+
+def _case_with_heaters(
+    flashx_directory: Path, case: Path, num_files: int, num_heaters: int
+) -> Path:
+    _copy_frames(flashx_directory, case, count=1)
+    for index in range(1, num_files + 1):
+        _write_heater(case / f"pool_boiling_hdf5_htr_{index:04d}")
+    (case / "flash.par").write_text(
+        f'htr_heaterName = "pool_boiling"\nhtr_numHeaters = {num_heaters}\n'
+    )
+    return case
+
+
+def test_extra_heater_files_are_warned_about(
+    flashx_directory: Path, tmp_path: Path
+) -> None:
+    case = _case_with_heaters(flashx_directory, tmp_path, num_files=2, num_heaters=1)
+    with pytest.warns(UserWarning, match="htr_numHeaters = 1"):
+        read_flashx(case)
+
+
+def test_heater_files_matching_flash_par_are_not_warned_about(
+    flashx_directory: Path, tmp_path: Path
+) -> None:
+    case = _case_with_heaters(flashx_directory, tmp_path, num_files=1, num_heaters=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert len(read_flashx(case).parameters.heaters) == 1
+
+
+def test_heater_wall_temp_is_stored_as_a_fraction(tmp_path: Path) -> None:
+    heater = read_heater(_write_heater(tmp_path / "INS_Pool_Boiling_hdf5_htr_0000"))
     assert heater["wall_temp_fraction"] == 0.5
     assert heater["type"] == "constant_wall_temp"
     assert "wallTemp" not in heater

@@ -11,8 +11,10 @@ import sys
 from pathlib import Path
 
 from boiling_data.boiling_data import BoilingSimulation
-from boiling_data.bubbleml import read_bubbleml
+from boiling_data.bubbleml import read_bubbleml, read_bubbleml_field_names
 from boiling_data.flashx.checks import Severity
+
+DEFAULT_FIELDS = ("dfun", "temperature", "velfacex", "velfacey", "velx", "vely")
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         help="check every nth frame of BubbleML files, to bound memory",
     )
     parser.add_argument(
+        "--fields",
+        nargs="+",
+        default=list(DEFAULT_FIELDS),
+        help="fields of BubbleML files to read and check, of those a file stores",
+    )
+    parser.add_argument(
         "--mirror-symmetric",
         action="store_true",
         help="Flash-X runs computed only the right half of a domain symmetric "
@@ -49,7 +57,12 @@ def read(path: Path, args: argparse.Namespace) -> BoilingSimulation:
         return BoilingSimulation.from_flashx(
             path, mirror_symmetric=args.mirror_symmetric
         )
-    return read_bubbleml(path, frames=slice(args.start, args.stop, args.stride))
+    stored = read_bubbleml_field_names(path)
+    return read_bubbleml(
+        path,
+        field_names=[name for name in args.fields if name in stored],
+        frames=slice(args.start, args.stop, args.stride),
+    )
 
 
 def main() -> None:

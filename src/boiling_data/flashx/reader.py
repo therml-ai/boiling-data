@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,9 @@ from boiling_data.flashx.symmetry import mirror_x
 
 PLOTFILE_PATTERN = re.compile(r"_hdf5_plt_cnt_\d+$")
 HEATER_PATTERN = re.compile(r"_hdf5_htr_\d+$")
+NUM_HEATERS_PATTERN = re.compile(
+    r"^\s*htr_numHeaters\s*=\s*(\d+)", re.IGNORECASE | re.MULTILINE
+)
 
 # Flash-X names its stored variables with four characters. these are
 # converted to clearer names.
@@ -332,6 +336,30 @@ def _matching_files(directory: Path, pattern: re.Pattern[str]) -> list[Path]:
     return sorted(path for path in directory.iterdir() if pattern.search(path.name))
 
 
+def read_num_heaters(directory: Path) -> int | None:
+    """htr_numHeaters from the case's flash.par, or None without one. The case's
+    flash.toml can leave it to a shared parent file, while flash.par holds the
+    merged parameters the run used."""
+    flash_par = directory / "flash.par"
+    if not flash_par.exists():
+        return None
+    match = NUM_HEATERS_PATTERN.search(flash_par.read_text(encoding="utf-8"))
+    return int(match.group(1)) if match else None
+
+
+def read_heaters(directory: Path) -> list[dict[str, Any]]:
+    heater_files = _matching_files(directory, HEATER_PATTERN)
+    num_heaters = read_num_heaters(directory)
+    if num_heaters is not None and num_heaters != len(heater_files):
+        # a stale heater file left in the case directory is read like a real one
+        warnings.warn(
+            f"{directory} has {len(heater_files)} heater files, but its flash.par "
+            f"sets htr_numHeaters = {num_heaters}",
+            stacklevel=2,
+        )
+    return [read_heater(path) for path in heater_files]
+
+
 def read_flashx(
     directory: str | os.PathLike[str], mirror_symmetric: bool = False
 ) -> BoilingSimulation:
@@ -350,9 +378,7 @@ def read_flashx(
         physical=read_physical(directory),
         non_dimensional=non_dimensional,
         discretization=discretization,
-        heaters=[
-            read_heater(path) for path in _matching_files(directory, HEATER_PATTERN)
-        ],
+        heaters=read_heaters(directory),
         boundary=boundary,
     )
     simulation = BoilingSimulation(
