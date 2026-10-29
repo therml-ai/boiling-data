@@ -54,8 +54,23 @@ def case_directories(sim_dir: Path, prefix: str) -> list[Path]:
     return cases
 
 
+def without_first_and_last_frames(simulation: BoilingSimulation) -> BoilingSimulation:
+    # Flash-X writes plot files midstep, with the exception of the first and last step.
+    # So all of the fields are consistent, we drop the first and last step.
+    # The first plot files is written before the first step and the last after the final step,
+    return BoilingSimulation(
+        fields={
+            name: field.time_slice(1, -1) for name, field in simulation.fields.items()
+        },
+        parameters=simulation.parameters,
+        time=simulation.time[1:-1],
+    )
+
+
 def convert_case(case: Path, output_dir: Path, mirror_symmetric: bool) -> str:
-    simulation = BoilingSimulation.from_flashx(case, mirror_symmetric=mirror_symmetric)
+    simulation = without_first_and_last_frames(
+        BoilingSimulation.from_flashx(case, mirror_symmetric=mirror_symmetric)
+    )
     path = simulation.to_bubbleml(output_dir / f"{case.name}.hdf5")
     temperature = simulation.field("temperature")
     return (
